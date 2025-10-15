@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>docker-dash - Cache Viewer</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@1/css/pico.min.css">
+    <style>
+        body {
+            padding: 1rem;
+        }
+        h2 {
+            margin-top: 2.5rem;
+        }
+        h3 {
+            margin-top: 2rem;
+        }
+        table {
+            overflow-x: auto;
+        }
+        pre {
+            font-size: 0.8rem;
+            background-color: var(--card-background-color);
+            border: 1px solid var(--card-border-color);
+        }
+    </style>
+</head>
+<body>
+    <main class="container">
+        <nav>
+            <h1>docker-dash</h1>
+            <ul><li><a href="#" role="button" id="theme-toggle"></a></li></ul>
+        </nav>
+        <div id="cache-container">
+            <p aria-busy="true">Loading cache data...</p>
+        </div>
+    </main>
+
+    <script>
+        document.addEventListener("DOMContentLoaded", function() {
+            const html = document.documentElement;
+            const themeToggle = document.getElementById('theme-toggle');
+
+            // Sanitizer function to prevent XSS
+            function sanitize(text) {
+                const element = document.createElement('div');
+                element.innerText = text;
+                return element.innerHTML;
+            }
+
+            // Recursively sanitize data
+            function sanitizeData(data) {
+                if (data === null || data === undefined) {
+                    return data;
+                }
+                if (Array.isArray(data)) {
+                    return data.map(sanitizeData);
+                }
+                if (typeof data === 'object') {
+                    const sanitizedObject = {};
+                    for (const key in data) {
+                        if (Object.prototype.hasOwnProperty.call(data, key)) {
+                            sanitizedObject[key] = sanitizeData(data[key]);
+                        }
+                    }
+                    return sanitizedObject;
+                }
+                if (typeof data === 'string') {
+                    // Allow certain HTML tags for display purposes, but sanitize the content
+                    const allowedTags = /^(<i>|<\/i>|✅|❌)$/;
+                    if (allowedTags.test(data)) {
+                        return data;
+                    }
+                    return sanitize(data);
+                }
+                return data;
+            }
+
+            function updateButtonText() {
+                const currentTheme = html.getAttribute('data-theme');
+                themeToggle.textContent = currentTheme === 'dark' ? 'Light Mode' : 'Dark Mode';
+            }
+
+            // 1. On load, apply saved theme and update button text
+            const savedTheme = localStorage.getItem('theme');
+            if (savedTheme) {
+                html.setAttribute('data-theme', savedTheme);
+            }
+            updateButtonText();
+
+            // 2. Add click listener for the toggle button
+            themeToggle.addEventListener('click', (event) => {
+                event.preventDefault();
+                const currentTheme = html.getAttribute('data-theme');
+                const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+                html.setAttribute('data-theme', newTheme);
+                localStorage.setItem('theme', newTheme);
+                updateButtonText();
+            });
+
+            // 3. Fetch and render cache data
+            fetch('/api/cache')
+                .then(response => response.json())
+                .then(initialData => {
+                    const data = sanitizeData(initialData); // Sanitize all incoming data
+                    const container = document.getElementById('cache-container');
+                    container.innerHTML = ''; // Clear loading message
+
+                    // Helper to create a table from an array of objects
+                    function createTable(title, headers, dataRows) {
+                        let html = `<h2>${sanitize(title)}</h2>`;
+                        if (dataRows.length === 0) {
+                            html += '<p>No data found in cache.</p>';
+                            return html;
+                        }
+                        html += '<table><thead><tr>';
+                        headers.forEach(h => html += `<th>${sanitize(h)}</th>`);
+                        html += '</tr></thead><tbody>';
+                        dataRows.forEach(row => {
+                            html += '<tr>';
+                            row.forEach(cell => html += `<td>${cell}</td>`); // Cells are pre-sanitized
+                            html += '</tr>';
+                        });
+                        html += '</tbody></table>';
+                        return html;
+                    }
+
+                    // 1. Tunnels Summary Table
+                    const tunnels = Object.values(data.tunnels || {}).map(t => t.tunnel_object);
+                    const tunnelRows = tunnels.map(t => [t.name, t.status, t.tun_type]);
+                    container.innerHTML += createTable('Tunnels', ['Name', 'Status', 'Type'], tunnelRows);
+
+                    // 2. Application Policies Table
+                    const policies = Object.values(data.access_policies || {});
+                    const policyRows = policies.map(p => [p.name, p.decision, p.app_count || 0]);
+                    container.innerHTML += createTable('Application Policies', ['Name', 'Decision', 'App Count'], policyRows);
+
+                    // 3. Identity Providers Table
+                    const idps = Object.values(data.identity_providers || {});
+                    const idpRows = idps.map(idp => [
+                        idp.name,
+                        idp.config?.client_id || 'N/A',
+                        idp.config?.redirect_url || 'N/A'
+                    ]);
+                    container.innerHTML += createTable('Identity Providers', ['Name', 'Client ID', 'Redirect URL'], idpRows);
+
+                    // 4. Access Applications Table
+                    const apps = Object.values(data.access_applications || {});
+                    const policyCache = data.access_policies || {};
+                    const appRows = apps.map(app => {
+                        const appPolicies = (app.policies || [])
+                            .map(p => {
+                                const foundPolicy = Object.values(policyCache).find(cachedPolicy => cachedPolicy.id === p.id);
+                                return foundPolicy ? foundPolicy.name : p.id;
+                            })
+                            .join(', ');
+                        return [
+                            app.domain,
+                            app.type,
+                            appPolicies || '<i>None</i>',
+                            app.auto_redirect_to_identity ? '✅ True' : '❌ False'
+                        ];
+                    });
+                    container.innerHTML += createTable('Access Applications', ['Domain', 'Type', 'Policies', 'Instant Auth'], appRows);
+
+                    // 5. Tunnel - Current Hostnames Table
+                    const tunnelsData = data.tunnels || {};
+                    let connectionsHtml = `<h2>Tunnel - Current Hostnames</h2>`;
+                    if (Object.keys(tunnelsData).length > 0) {
+                        for (const tunnelId in tunnelsData) {
+                            const tunnelInfo = tunnelsData[tunnelId];
+                            const tunnelName = tunnelInfo.tunnel_object.name;
+                            const connections = tunnelInfo.connections || [];
+
+                            connectionsHtml += `<h3>${sanitize(tunnelName)}</h3>`;
+                            connectionsHtml += `
+                                <table>
+                                    <thead>
+                                        <tr><th>Hostname</th><th>Service</th></tr>
+                                    </thead>
+                                    <tbody>
+                                        ${connections.length > 0 ? connections.map(conn => `
+                                            <tr>
+                                                <td>${conn.hostname || '<i>(Catch-all)</i>'}</td>
+                                                <td>${conn.service}</td>
+                                            </tr>
+                                        `).join('') : '<tr><td colspan="2">No connections configured for this tunnel.</td></tr>'}
+                                    </tbody>
+                                </table>
+                            `;
+                        }
+                    } else {
+                        connectionsHtml += '<p>No tunnels found in cache.</p>';
+                    }
+                    container.innerHTML += connectionsHtml;
+                })
+                .catch(error => {
+                    const sanitizedError = sanitize(error.toString());
+                    document.getElementById('cache-container').textContent = 'Error loading cache data: ' + sanitizedError;
+                });
+        });
+    </script>
+</body>
+</html>

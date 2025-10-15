@@ -1,0 +1,22 @@
+docker-dash:
+  container_name: docker-dash
+  image: amoisis/docker-dash:latest
+  environment:
+    CF_ACCOUNT_ID: accountid
+    CF_API_TOKEN: apitoken
+    LOG_LEVEL: INFO
+    DOCKER_HOST: tcp://<proxy-host>:<proxy-port>
+
+
+example-service:
+  image: example-service:latest  
+  container_name: example-service
+  labels:
+    - docker.dash.enable=true
+    - docker.dash.hostname=example-service.example.com
+    - docker.dash.tunnel=example-tunnel
+    - docker.dash.service=http://example-service
+    - docker.dash.application.access.policy=Policy1,Policy2
+    - docker.dash.application.access.loginmethods=AuthenticationService
+    - docker.dash.application.access.instantauth=true
+    - docker.dash.application.access.icon=https://example-service.example.com/icon.png
