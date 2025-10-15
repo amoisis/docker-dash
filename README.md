@@ -1,6 +1,6 @@
-[![Docker](https://github.com/amoisis/docker-traefik-external-dns/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/amoisis/docker-traefik-external-dns/actions/workflows/docker-publish.yml)
-[![Dependabot Updates](https://github.com/amoisis/docker-traefik-external-dns/actions/workflows/dependabot/dependabot-updates/badge.svg)](https://github.com/amoisis/docker-traefik-external-dns/actions/workflows/dependabot/dependabot-updates)
-[![CodeQL](https://github.com/amoisis/docker-traefik-external-dns/actions/workflows/github-code-scanning/codeql/badge.svg)](https://github.com/amoisis/docker-traefik-external-dns/actions/workflows/github-code-scanning/codeql)
+[![Docker](https://github.com/amoisis/docker-dash/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/amoisis/docker-dash/actions/workflows/docker-publish.yml)
+[![Dependabot Updates](https://github.com/amoisis/docker-dash/actions/workflows/dependabot/dependabot-updates/badge.svg)](https://github.com/amoisis/docker-dash/actions/workflows/dependabot/dependabot-updates)
+[![CodeQL](https://github.com/amoisis/docker-dash/actions/workflows/github-code-scanning/codeql/badge.svg)](https://github.com/amoisis/docker-dash/actions/workflows/github-code-scanning/codeql)
 
 # Overview
 `docker-dash` is a dynamic configuration service that automatically creates and manages Cloudflare Tunnels and Access Applications based on Docker container labels. It listens to the Docker event stream for container start/stop events and configures public hostnames and access policies in Cloudflare accordingly, providing a "set-it-and-forget-it" solution for exposing your services securely.
