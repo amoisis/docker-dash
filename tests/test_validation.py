@@ -78,7 +78,6 @@ class TestTunnelNameValidation:
             "",  # Empty
             "   ",  # Whitespace only
             None,  # None
-            "tunnel name",  # Contains space
             "tunnel.name",  # Contains dot
             "tunnel@name",  # Invalid character
             "a" * 101,  # Too long (> 100 chars)
@@ -140,9 +139,9 @@ class TestValidationInFunctions:
         mock_manager.cf_client = mocker.MagicMock()
         mock_manager.account_id = "test-account"
         
-        # Try with invalid tunnel name
+        # Try with invalid tunnel name (contains invalid character)
         cloudflare_client.add_or_update_ingress_rule(
-            "invalid tunnel name",  # Contains spaces
+            "invalid@tunnel",  # Contains invalid character
             {"hostname": "test.example.com", "service": "http://backend:8080"},
             manager=mock_manager
         )

@@ -159,14 +159,14 @@ def validate_tunnel_name(tunnel_name: str) -> None:
     if len(tunnel_name) < 1:
         raise ValidationError("Tunnel name cannot be empty")
     
-    # Allow alphanumeric, hyphens, underscores
+    # Allow alphanumeric, hyphens, underscores, and spaces
     import re
-    tunnel_pattern = re.compile(r'^[a-zA-Z0-9_-]+$')
+    tunnel_pattern = re.compile(r'^[a-zA-Z0-9_\s-]+$')
     
     if not tunnel_pattern.match(tunnel_name):
         raise ValidationError(
             f"Invalid tunnel name: '{tunnel_name}'. "
-            "Must contain only alphanumeric characters, hyphens, and underscores."
+            "Must contain only alphanumeric characters, hyphens, underscores, and spaces."
         )
 
 
