@@ -4,39 +4,82 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>docker-dash - Dashboard</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0%25' y1='0%25' x2='100%25' y2='100%25'%3E%3Cstop offset='0%25' style='stop-color:%2300d4ff'/%3E%3Cstop offset='100%25' style='stop-color:%230091ff'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect x='4' y='10' width='6' height='4' fill='url(%23g)'/%3E%3Crect x='11' y='10' width='6' height='4' fill='url(%23g)'/%3E%3Crect x='18' y='10' width='6' height='4' fill='url(%23g)'/%3E%3Crect x='4' y='15' width='6' height='8' fill='url(%23g)'/%3E%3Crect x='11' y='15' width='6' height='8' fill='url(%23g)'/%3E%3Crect x='18' y='15' width='6' height='8' fill='url(%23g)'/%3E%3Cpath d='M20 8 L26 20 L14 20 Z' fill='%23ffcc00' stroke='%23fff' stroke-width='0.5'/%3E%3C/svg%3E">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@1/css/pico.min.css">
     <style>
         :root {
+            --brand-primary: #00d4ff;
+            --brand-secondary: #0091ff;
             --status-active: #10b981;
             --status-warning: #f59e0b;
             --status-error: #ef4444;
             --status-disabled: #6b7280;
-            --card-hover: rgba(255, 255, 255, 0.05);
+            --card-hover: rgba(0, 212, 255, 0.05);
         }
         
         body {
-            padding: 0.5rem;
+            padding: 0;
             background: var(--background-color);
+            margin: 0;
         }
         
         .container {
-            max-width: 1400px;
+            max-width: 1600px;
+            padding: 0 1rem;
         }
         
-        /* Header & Navigation */
+        /* Top Navigation Bar */
         nav {
-            margin-bottom: 2rem;
-            padding: 1rem;
             background: var(--card-background-color);
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            border-bottom: 2px solid var(--brand-primary);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+            margin: 0;
+            padding: 0.75rem 1rem;
+            position: sticky;
+            top: 0;
+            z-index: 1000;
         }
         
-        nav h1 {
+        nav .container {
+            display: flex;
+            align-items: center;
+            gap: 2rem;
+            flex-wrap: wrap;
+        }
+        
+        .nav-brand {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
             margin: 0;
+            flex-shrink: 0;
+        }
+        
+        .nav-brand svg {
+            width: 40px;
+            height: 40px;
+        }
+        
+        .nav-brand h1 {
+            margin: 0;
+            font-size: 1.5rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, var(--brand-primary), var(--brand-secondary));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        
+        .system-status {
             display: flex;
             align-items: center;
             gap: 0.5rem;
+            padding: 0.5rem 1rem;
+            background: rgba(16, 185, 129, 0.1);
+            border-radius: 999px;
+            font-size: 0.875rem;
+            font-weight: 600;
+            color: var(--status-active);
         }
         
         .status-dot {
@@ -48,60 +91,173 @@
         }
         
         @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.6; transform: scale(0.95); }
+        }
+        
+        .nav-search {
+            flex: 1;
+            max-width: 400px;
+            min-width: 200px;
+            margin: 0;
+        }
+        
+        .nav-search input {
+            margin: 0;
+            padding: 0.5rem 1rem;
+            border-radius: 8px;
+            background: rgba(255,255,255,0.05);
+            border: 1px solid var(--muted-border-color);
+        }
+        
+        .nav-search input:focus {
+            border-color: var(--brand-primary);
+            box-shadow: 0 0 0 2px rgba(0, 212, 255, 0.1);
+        }
+        
+        .nav-actions {
+            display: flex;
+            gap: 0.75rem;
+            align-items: center;
+            margin-left: auto;
+        }
+        
+        .nav-actions button,
+        .nav-actions a[role="button"] {
+            margin: 0;
+            padding: 0.5rem 1rem;
+            font-size: 0.875rem;
+        }
+        
+        .btn-primary {
+            background: linear-gradient(135deg, var(--brand-primary), var(--brand-secondary));
+            border: none;
+            color: #000;
+            font-weight: 600;
+        }
+        
+        .btn-primary:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(0, 212, 255, 0.3);
+        }
+        
+        /* Main Content */
+        main {
+            padding: 2rem 0;
         }
         
         /* Stats Grid */
         .stats-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 1rem;
+            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+            gap: 1.5rem;
             margin-bottom: 2rem;
         }
         
         .stat-card {
             background: var(--card-background-color);
             padding: 1.5rem;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            transition: transform 0.2s, box-shadow 0.2s;
+            border-radius: 12px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            border: 1px solid var(--muted-border-color);
+            transition: all 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .stat-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: linear-gradient(90deg, var(--brand-primary), var(--brand-secondary));
         }
         
         .stat-card:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+            transform: translateY(-4px);
+            box-shadow: 0 8px 16px rgba(0,0,0,0.2);
+            border-color: var(--brand-primary);
         }
         
-        .stat-card h3 {
-            margin: 0 0 0.5rem 0;
+        .stat-card-header {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            margin-bottom: 0.75rem;
+        }
+        
+        .stat-icon {
+            width: 48px;
+            height: 48px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 12px;
+            font-size: 1.5rem;
+        }
+        
+        .stat-icon.active { background: rgba(16, 185, 129, 0.2); }
+        .stat-icon.warning { background: rgba(245, 158, 11, 0.2); }
+        .stat-icon.info { background: rgba(0, 212, 255, 0.2); }
+        .stat-icon.primary { background: rgba(255, 204, 0, 0.2); }
+        
+        .stat-content h3 {
+            margin: 0;
             font-size: 0.875rem;
             color: var(--muted-color);
             text-transform: uppercase;
             letter-spacing: 0.05em;
+            font-weight: 600;
         }
         
         .stat-value {
-            font-size: 2rem;
+            font-size: 2.5rem;
             font-weight: 700;
             margin: 0;
+            line-height: 1;
+        }
+        
+        /* Tabs */
+        .tabs {
             display: flex;
-            align-items: center;
             gap: 0.5rem;
-        }
-        
-        .stat-icon {
-            font-size: 1.5rem;
-        }
-        
-        /* Section Cards */
-        .section-card {
-            background: var(--card-background-color);
-            padding: 1.5rem;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
             margin-bottom: 1.5rem;
+            border-bottom: 2px solid var(--muted-border-color);
+            overflow-x: auto;
+        }
+        
+        .tab {
+            padding: 0.75rem 1.5rem;
+            background: none;
+            border: none;
+            border-bottom: 2px solid transparent;
+            margin-bottom: -2px;
+            cursor: pointer;
+            font-weight: 600;
+            color: var(--muted-color);
+            transition: all 0.2s;
+            white-space: nowrap;
+        }
+        
+        .tab:hover {
+            color: var(--color);
+            background: rgba(255,255,255,0.05);
+        }
+        
+        .tab.active {
+            color: var(--brand-primary);
+            border-bottom-color: var(--brand-primary);
+        }
+        
+        .tab-content {
+            display: none;
             animation: fadeIn 0.3s ease-in;
+        }
+        
+        .tab-content.active {
+            display: block;
         }
         
         @keyframes fadeIn {
@@ -109,22 +265,23 @@
             to { opacity: 1; transform: translateY(0); }
         }
         
-        .section-card h2 {
-            margin-top: 0;
-            margin-bottom: 1rem;
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-            font-size: 1.5rem;
+        /* Section Cards */
+        .section-card {
+            background: var(--card-background-color);
+            padding: 1.5rem;
+            border-radius: 12px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            border: 1px solid var(--muted-border-color);
+            margin-bottom: 1.5rem;
         }
         
-        .section-card h3 {
-            margin-top: 1.5rem;
-            margin-bottom: 1rem;
-            font-size: 1.1rem;
+        .section-card h2 {
+            margin-top: 0;
+            margin-bottom: 1.5rem;
             display: flex;
             align-items: center;
-            gap: 0.5rem;
+            gap: 0.75rem;
+            font-size: 1.25rem;
         }
         
         /* Status Badges */
@@ -141,22 +298,22 @@
         }
         
         .badge-active {
-            background: rgba(16, 185, 129, 0.1);
+            background: rgba(16, 185, 129, 0.15);
             color: var(--status-active);
         }
         
         .badge-warning {
-            background: rgba(245, 158, 11, 0.1);
+            background: rgba(245, 158, 11, 0.15);
             color: var(--status-warning);
         }
         
         .badge-error {
-            background: rgba(239, 68, 68, 0.1);
+            background: rgba(239, 68, 68, 0.15);
             color: var(--status-error);
         }
         
         .badge-disabled {
-            background: rgba(107, 114, 128, 0.1);
+            background: rgba(107, 114, 128, 0.15);
             color: var(--status-disabled);
         }
         
@@ -164,32 +321,39 @@
         table {
             width: 100%;
             margin: 0;
+            border-collapse: collapse;
+        }
+        
+        table thead tr {
+            border-bottom: 2px solid var(--muted-border-color);
         }
         
         table tbody tr {
             transition: background-color 0.2s;
+            border-bottom: 1px solid var(--muted-border-color);
         }
         
         table tbody tr:hover {
             background: var(--card-hover);
         }
         
-        /* Loading States */
-        .loading-bar {
-            height: 3px;
-            background: linear-gradient(90deg, var(--primary), var(--secondary));
-            border-radius: 3px;
-            animation: loading 1.5s infinite;
-            margin-bottom: 1rem;
+        table th {
+            text-align: left;
+            padding: 0.75rem 1rem;
+            font-weight: 600;
+            color: var(--muted-color);
+            text-transform: uppercase;
+            font-size: 0.75rem;
+            letter-spacing: 0.05em;
         }
         
-        @keyframes loading {
-            0% { transform: translateX(-100%); }
-            100% { transform: translateX(100%); }
+        table td {
+            padding: 1rem;
         }
         
         /* Details/Summary */
         details {
+            background: rgba(107, 114, 128, 0.05);
             border: 1px solid var(--muted-border-color);
             border-radius: 8px;
             padding: 1rem;
@@ -200,10 +364,15 @@
             cursor: pointer;
             font-weight: 600;
             user-select: none;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
         }
         
         details[open] summary {
             margin-bottom: 1rem;
+            padding-bottom: 1rem;
+            border-bottom: 1px solid var(--muted-border-color);
         }
         
         /* Empty States */
@@ -219,65 +388,111 @@
             opacity: 0.5;
         }
         
-        /* Responsive */
-        @media (max-width: 768px) {
-            .stats-grid {
-                grid-template-columns: 1fr;
-            }
-            
-            .stat-value {
-                font-size: 1.5rem;
-            }
-        }
-        
-        /* Auto-refresh indicator */
+        /* Refresh Indicator */
         .refresh-indicator {
             display: flex;
             align-items: center;
             gap: 0.5rem;
-            font-size: 0.875rem;
+            font-size: 0.75rem;
             color: var(--muted-color);
         }
         
         .refresh-progress {
             width: 60px;
-            height: 4px;
+            height: 3px;
             background: var(--muted-border-color);
-            border-radius: 2px;
+            border-radius: 3px;
             overflow: hidden;
         }
         
         .refresh-progress-bar {
             height: 100%;
-            background: var(--primary);
+            background: linear-gradient(90deg, var(--brand-primary), var(--brand-secondary));
             transition: width 1s linear;
+        }
+        
+        /* Responsive */
+        @media (max-width: 768px) {
+            nav .container {
+                flex-direction: column;
+                gap: 1rem;
+            }
+            
+            .nav-search {
+                width: 100%;
+                max-width: none;
+            }
+            
+            .stats-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .tabs {
+                flex-wrap: wrap;
+            }
         }
     </style>
 </head>
 <body>
-    <main class="container">
-        <nav>
-            <h1>
+<body>
+    <nav>
+        <div class="container">
+            <div class="nav-brand">
+                <svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+                    <defs>
+                        <linearGradient id="brandGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                            <stop offset="0%" style="stop-color:#00d4ff"/>
+                            <stop offset="100%" style="stop-color:#0091ff"/>
+                        </linearGradient>
+                    </defs>
+                    <!-- Container boxes -->
+                    <rect x="8" y="20" width="12" height="8" fill="url(#brandGradient)" rx="1"/>
+                    <rect x="22" y="20" width="12" height="8" fill="url(#brandGradient)" rx="1"/>
+                    <rect x="36" y="20" width="12" height="8" fill="url(#brandGradient)" rx="1"/>
+                    <rect x="8" y="30" width="12" height="16" fill="url(#brandGradient)" rx="1"/>
+                    <rect x="22" y="30" width="12" height="16" fill="url(#brandGradient)" rx="1"/>
+                    <rect x="36" y="30" width="12" height="16" fill="url(#brandGradient)" rx="1"/>
+                    <!-- Lightning bolt -->
+                    <path d="M40 16 L52 40 L28 40 Z" fill="#ffcc00" stroke="#fff" stroke-width="1"/>
+                </svg>
+                <h1>docker-dash</h1>
+            </div>
+            
+            <div class="system-status">
                 <span class="status-dot"></span>
-                docker-dash
-            </h1>
-            <ul>
-                <li>
-                    <div class="refresh-indicator">
-                        <small id="last-updated">Loading...</small>
-                        <div class="refresh-progress">
-                            <div class="refresh-progress-bar" id="refresh-progress"></div>
-                        </div>
+                <span>System Status: Healthy</span>
+            </div>
+            
+            <div class="nav-search">
+                <input type="search" id="search-input" placeholder="Search containers, tunnels..." />
+            </div>
+            
+            <div class="nav-actions">
+                <div class="refresh-indicator">
+                    <small id="last-updated">Loading...</small>
+                    <div class="refresh-progress">
+                        <div class="refresh-progress-bar" id="refresh-progress"></div>
                     </div>
-                </li>
-                <li><button id="refresh-button" class="secondary">🔄 Refresh</button></li>
-                <li><a href="#" role="button" id="theme-toggle" class="secondary"></a></li>
-            </ul>
-        </nav>
-        
-        <div id="stats-overview"></div>
-        <div id="cache-container">
-            <p aria-busy="true">Loading dashboard data...</p>
+                </div>
+                <button id="refresh-button" class="secondary">🔄 Refresh</button>
+                <a href="#" role="button" id="theme-toggle" class="secondary"></a>
+            </div>
+        </div>
+    </nav>
+    
+    <main>
+        <div class="container">
+            <div id="stats-overview"></div>
+            
+            <div class="tabs">
+                <button class="tab active" data-tab="container-status">📦 Container Status</button>
+                <button class="tab" data-tab="tunnels">🔌 Tunnels</button>
+                <button class="tab" data-tab="access">🔐 Access & Security</button>
+            </div>
+            
+            <div class="tab-content active" id="tab-container-status"></div>
+            <div class="tab-content" id="tab-tunnels"></div>
+            <div class="tab-content" id="tab-access"></div>
         </div>
     </main>
 
@@ -287,14 +502,44 @@
             const themeToggle = document.getElementById('theme-toggle');
             const refreshButton = document.getElementById('refresh-button');
             const lastUpdatedEl = document.getElementById('last-updated');
-            const cacheContainer = document.getElementById('cache-container');
             const statsOverview = document.getElementById('stats-overview');
             const refreshProgress = document.getElementById('refresh-progress');
+            const searchInput = document.getElementById('search-input');
+            
+            // Tab containers
+            const tabContainerStatus = document.getElementById('tab-container-status');
+            const tabTunnels = document.getElementById('tab-tunnels');
+            const tabAccess = document.getElementById('tab-access');
             
             // Auto-refresh interval in milliseconds (30 seconds)
             const AUTO_REFRESH_INTERVAL = 30000;
             let refreshInterval = null;
             let progressInterval = null;
+
+            // Tab switching
+            document.querySelectorAll('.tab').forEach(tab => {
+                tab.addEventListener('click', () => {
+                    // Update active tab
+                    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+                    tab.classList.add('active');
+                    
+                    // Update active content
+                    const tabName = tab.getAttribute('data-tab');
+                    document.querySelectorAll('.tab-content').forEach(content => {
+                        content.classList.remove('active');
+                    });
+                    document.getElementById(`tab-${tabName}`).classList.add('active');
+                });
+            });
+
+            // Search functionality
+            searchInput.addEventListener('input', (e) => {
+                const searchTerm = e.target.value.toLowerCase();
+                document.querySelectorAll('table tbody tr').forEach(row => {
+                    const text = row.textContent.toLowerCase();
+                    row.style.display = text.includes(searchTerm) ? '' : 'none';
+                });
+            });
 
             // Sanitizer function to prevent XSS
             function sanitize(text) {
@@ -410,41 +655,52 @@
                         const tunnelCount = Object.keys(data.tunnels || {}).length;
                         const appCount = Object.values(data.access_applications || {}).length;
                         
-                        // Render stats overview
+                        // Render stats overview with new design
                         statsOverview.innerHTML = `
                             <div class="stats-grid">
                                 <div class="stat-card">
-                                    <h3>Active Containers</h3>
-                                    <p class="stat-value">
-                                        <span class="stat-icon">✅</span>
-                                        ${activeCount}
-                                    </p>
+                                    <div class="stat-card-header">
+                                        <div class="stat-icon active">✅</div>
+                                        <div class="stat-content">
+                                            <h3>Active Containers</h3>
+                                            <p class="stat-value">${activeCount}</p>
+                                        </div>
+                                    </div>
                                 </div>
                                 <div class="stat-card">
-                                    <h3>Misconfigured</h3>
-                                    <p class="stat-value">
-                                        <span class="stat-icon">⚠️</span>
-                                        ${misconfiguredCount}
-                                    </p>
+                                    <div class="stat-card-header">
+                                        <div class="stat-icon warning">⚠️</div>
+                                        <div class="stat-content">
+                                            <h3>Misconfigured</h3>
+                                            <p class="stat-value">${misconfiguredCount}</p>
+                                        </div>
+                                    </div>
                                 </div>
                                 <div class="stat-card">
-                                    <h3>Cloudflare Tunnels</h3>
-                                    <p class="stat-value">
-                                        <span class="stat-icon">🔌</span>
-                                        ${tunnelCount}
-                                    </p>
+                                    <div class="stat-card-header">
+                                        <div class="stat-icon info">🔌</div>
+                                        <div class="stat-content">
+                                            <h3>Cloudflare Tunnels</h3>
+                                            <p class="stat-value">${tunnelCount}</p>
+                                        </div>
+                                    </div>
                                 </div>
                                 <div class="stat-card">
-                                    <h3>Access Apps</h3>
-                                    <p class="stat-value">
-                                        <span class="stat-icon">🔐</span>
-                                        ${appCount}
-                                    </p>
+                                    <div class="stat-card-header">
+                                        <div class="stat-icon primary">🔐</div>
+                                        <div class="stat-content">
+                                            <h3>Access Policies</h3>
+                                            <p class="stat-value">${appCount}</p>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                         `;
                         
-                        cacheContainer.innerHTML = ''; // Clear previous content
+                        // Clear tab contents
+                        tabContainerStatus.innerHTML = '';
+                        tabTunnels.innerHTML = '';
+                        tabAccess.innerHTML = '';
 
                         // Container Status Section
                         if (containerIds.length > 0) {
@@ -497,21 +753,34 @@
                             }
                             
                             containerHtml += '</div>';
-                            cacheContainer.innerHTML += containerHtml;
+                            tabContainerStatus.innerHTML += containerHtml;
                         }
 
                         // Tunnels Section
                         const tunnels = Object.values(data.tunnels || {}).map(t => t.tunnel_object);
                         if (tunnels.length > 0) {
                             let tunnelHtml = '<div class="section-card"><h2>🔌 Cloudflare Tunnels</h2>';
-                            const tunnelRows = tunnels.map(t => [
-                                t.name,
-                                '<span class="badge badge-active">' + t.status + '</span>',
-                                t.tun_type
-                            ]);
+                            const tunnelRows = tunnels.map(t => {
+                                // Determine badge class based on tunnel status
+                                let badgeClass = 'badge-active';
+                                const status = (t.status || '').toLowerCase();
+                                if (status === 'inactive' || status === 'down' || status === 'degraded') {
+                                    badgeClass = 'badge-error';
+                                } else if (status === 'active' || status === 'healthy') {
+                                    badgeClass = 'badge-active';
+                                } else {
+                                    badgeClass = 'badge-warning';
+                                }
+                                
+                                return [
+                                    t.name,
+                                    '<span class="badge ' + badgeClass + '">' + t.status + '</span>',
+                                    t.tun_type
+                                ];
+                            });
                             tunnelHtml += createTable(['Name', 'Status', 'Type'], tunnelRows);
                             tunnelHtml += '</div>';
-                            cacheContainer.innerHTML += tunnelHtml;
+                            tabTunnels.innerHTML += tunnelHtml;
                         }
 
                         // Tunnel Connections Section
@@ -531,7 +800,7 @@
                                 connectionsHtml += createTable(['Hostname', 'Service'], connRows);
                             }
                             connectionsHtml += '</div>';
-                            cacheContainer.innerHTML += connectionsHtml;
+                            tabTunnels.innerHTML += connectionsHtml;
                         }
 
                         // Access Applications Section
@@ -555,7 +824,7 @@
                             });
                             appsHtml += createTable(['Domain', 'Type', 'Policies', 'Instant Auth'], appRows);
                             appsHtml += '</div>';
-                            cacheContainer.innerHTML += appsHtml;
+                            tabAccess.innerHTML += appsHtml;
                         }
 
                         // Application Policies Section
@@ -569,7 +838,7 @@
                             ]);
                             policiesHtml += createTable(['Name', 'Decision', 'App Count'], policyRows);
                             policiesHtml += '</div>';
-                            cacheContainer.innerHTML += policiesHtml;
+                            tabAccess.innerHTML += policiesHtml;
                         }
 
                         // Identity Providers Section
@@ -583,7 +852,7 @@
                             ]);
                             idpsHtml += createTable(['Name', 'Client ID', 'Redirect URL'], idpRows);
                             idpsHtml += '</div>';
-                            cacheContainer.innerHTML += idpsHtml;
+                            tabAccess.innerHTML += idpsHtml;
                         }
                         
                         // Update timestamp and progress
@@ -592,7 +861,10 @@
                     })
                     .catch(error => {
                         const sanitizedError = sanitize(error.toString());
-                        cacheContainer.innerHTML = '<div class="section-card"><p role="alert">❌ Error loading dashboard data: ' + sanitizedError + '</p></div>';
+                        const errorHtml = '<div class="section-card"><p role="alert">❌ Error loading dashboard data: ' + sanitizedError + '</p></div>';
+                        tabContainerStatus.innerHTML = errorHtml;
+                        tabTunnels.innerHTML = errorHtml;
+                        tabAccess.innerHTML = errorHtml;
                         lastUpdatedEl.textContent = 'Update failed';
                     })
                     .finally(() => {
