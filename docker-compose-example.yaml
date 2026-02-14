@@ -1,11 +1,21 @@
 docker-dash:
   container_name: docker-dash
   image: amoisis/docker-dash:latest
+  restart: unless-stopped
+  ports:
+    - "3445:3445"  # Web UI port
   environment:
     CF_ACCOUNT_ID: accountid
     CF_API_TOKEN: apitoken
     LOG_LEVEL: INFO
-    DOCKER_HOST: tcp://<proxy-host>:<proxy-port>
+    # Optional: Configure web server port (default: 3445)
+    # WEB_PORT: 3445
+  volumes:
+    # Mount Docker socket to listen for container events
+    - /var/run/docker.sock:/var/run/docker.sock:ro
+    # Alternative: Use Docker socket proxy (uncomment and configure)
+    # environment:
+    #   DOCKER_HOST: tcp://<proxy-host>:<proxy-port>
 
 
 example-service:

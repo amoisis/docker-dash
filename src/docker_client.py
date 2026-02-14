@@ -1,7 +1,7 @@
 import docker
 import logging
 import time
-from .cloudflare_client import (
+from cloudflare_client import (
     add_or_update_ingress_rule, 
     add_or_update_access_application, 
     remove_ingress_rule, 
@@ -12,6 +12,10 @@ from .cloudflare_client import (
 _last_processed_time = {}
 _container_ingress_state = {}
 _debounce_delay_seconds = 10
+
+# Event listener control
+_event_stream = None
+_docker_client = None
 
 def get_docker_client():
     """
@@ -103,15 +107,36 @@ def process_container(container):
     except Exception as e:
         logging.error(f"Error processing container {container_id[:12]}: {e}")
 
+def stop_event_listener():
+    """
+    Stops the event listener gracefully.
+    """
+    global _event_stream, _docker_client
+    if _event_stream:
+        try:
+            _event_stream.close()
+            logging.info("Docker event stream closed.")
+        except Exception as e:
+            logging.error(f"Error closing event stream: {e}")
+    if _docker_client:
+        try:
+            _docker_client.close()
+            logging.info("Docker client connection closed.")
+        except Exception as e:
+            logging.error(f"Error closing Docker client: {e}")
+
 def start_event_listener():
     """
     Initializes docker client, scans existing containers, and listens for new
     container events indefinitely.
     """
+    global _event_stream, _docker_client
     docker_client = get_docker_client()
     if not docker_client:
         logging.critical("Could not connect to Docker. Exiting.")
         return
+    
+    _docker_client = docker_client
 
     # 1. Process already running containers
     logging.info("Scanning for existing containers...")
@@ -120,7 +145,8 @@ def start_event_listener():
 
     # 2. Listen for new events
     logging.info("Listening for Docker container events...")
-    for event in docker_client.events(decode=True):
+    _event_stream = docker_client.events(decode=True)
+    for event in _event_stream:
         try:
             if event.get("Type") == "container":
                 action = event.get("Action")

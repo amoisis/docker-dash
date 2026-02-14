@@ -1,3 +1,5 @@
 .devcontainer
 .env
 src/__pycache__
+.pytest_cache
+.coverage

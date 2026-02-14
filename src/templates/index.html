@@ -29,7 +29,11 @@
     <main class="container">
         <nav>
             <h1>docker-dash</h1>
-            <ul><li><a href="#" role="button" id="theme-toggle"></a></li></ul>
+            <ul>
+                <li><small id="last-updated" style="margin-right: 1rem;">Loading...</small></li>
+                <li><button id="refresh-button" class="secondary">🔄 Refresh</button></li>
+                <li><a href="#" role="button" id="theme-toggle"></a></li>
+            </ul>
         </nav>
         <div id="cache-container">
             <p aria-busy="true">Loading cache data...</p>
@@ -40,6 +44,13 @@
         document.addEventListener("DOMContentLoaded", function() {
             const html = document.documentElement;
             const themeToggle = document.getElementById('theme-toggle');
+            const refreshButton = document.getElementById('refresh-button');
+            const lastUpdatedEl = document.getElementById('last-updated');
+            const cacheContainer = document.getElementById('cache-container');
+            
+            // Auto-refresh interval in milliseconds (30 seconds)
+            const AUTO_REFRESH_INTERVAL = 30000;
+            let refreshInterval = null;
 
             // Sanitizer function to prevent XSS
             function sanitize(text) {
@@ -98,106 +109,161 @@
                 updateButtonText();
             });
 
-            // 3. Fetch and render cache data
-            fetch('/api/cache')
-                .then(response => response.json())
-                .then(initialData => {
-                    const data = sanitizeData(initialData); // Sanitize all incoming data
-                    const container = document.getElementById('cache-container');
-                    container.innerHTML = ''; // Clear loading message
-
-                    // Helper to create a table from an array of objects
-                    function createTable(title, headers, dataRows) {
-                        let html = `<h2>${sanitize(title)}</h2>`;
-                        if (dataRows.length === 0) {
-                            html += '<p>No data found in cache.</p>';
-                            return html;
-                        }
-                        html += '<table><thead><tr>';
-                        headers.forEach(h => html += `<th>${sanitize(h)}</th>`);
-                        html += '</tr></thead><tbody>';
-                        dataRows.forEach(row => {
-                            html += '<tr>';
-                            row.forEach(cell => html += `<td>${cell}</td>`); // Cells are pre-sanitized
-                            html += '</tr>';
-                        });
-                        html += '</tbody></table>';
-                        return html;
-                    }
-
-                    // 1. Tunnels Summary Table
-                    const tunnels = Object.values(data.tunnels || {}).map(t => t.tunnel_object);
-                    const tunnelRows = tunnels.map(t => [t.name, t.status, t.tun_type]);
-                    container.innerHTML += createTable('Tunnels', ['Name', 'Status', 'Type'], tunnelRows);
-
-                    // 2. Application Policies Table
-                    const policies = Object.values(data.access_policies || {});
-                    const policyRows = policies.map(p => [p.name, p.decision, p.app_count || 0]);
-                    container.innerHTML += createTable('Application Policies', ['Name', 'Decision', 'App Count'], policyRows);
-
-                    // 3. Identity Providers Table
-                    const idps = Object.values(data.identity_providers || {});
-                    const idpRows = idps.map(idp => [
-                        idp.name,
-                        idp.config?.client_id || 'N/A',
-                        idp.config?.redirect_url || 'N/A'
-                    ]);
-                    container.innerHTML += createTable('Identity Providers', ['Name', 'Client ID', 'Redirect URL'], idpRows);
-
-                    // 4. Access Applications Table
-                    const apps = Object.values(data.access_applications || {});
-                    const policyCache = data.access_policies || {};
-                    const appRows = apps.map(app => {
-                        const appPolicies = (app.policies || [])
-                            .map(p => {
-                                const foundPolicy = Object.values(policyCache).find(cachedPolicy => cachedPolicy.id === p.id);
-                                return foundPolicy ? foundPolicy.name : p.id;
-                            })
-                            .join(', ');
-                        return [
-                            app.domain,
-                            app.type,
-                            appPolicies || '<i>None</i>',
-                            app.auto_redirect_to_identity ? '✅ True' : '❌ False'
-                        ];
-                    });
-                    container.innerHTML += createTable('Access Applications', ['Domain', 'Type', 'Policies', 'Instant Auth'], appRows);
-
-                    // 5. Tunnel - Current Hostnames Table
-                    const tunnelsData = data.tunnels || {};
-                    let connectionsHtml = `<h2>Tunnel - Current Hostnames</h2>`;
-                    if (Object.keys(tunnelsData).length > 0) {
-                        for (const tunnelId in tunnelsData) {
-                            const tunnelInfo = tunnelsData[tunnelId];
-                            const tunnelName = tunnelInfo.tunnel_object.name;
-                            const connections = tunnelInfo.connections || [];
-
-                            connectionsHtml += `<h3>${sanitize(tunnelName)}</h3>`;
-                            connectionsHtml += `
-                                <table>
-                                    <thead>
-                                        <tr><th>Hostname</th><th>Service</th></tr>
-                                    </thead>
-                                    <tbody>
-                                        ${connections.length > 0 ? connections.map(conn => `
-                                            <tr>
-                                                <td>${conn.hostname || '<i>(Catch-all)</i>'}</td>
-                                                <td>${conn.service}</td>
-                                            </tr>
-                                        `).join('') : '<tr><td colspan="2">No connections configured for this tunnel.</td></tr>'}
-                                    </tbody>
-                                </table>
-                            `;
-                        }
-                    } else {
-                        connectionsHtml += '<p>No tunnels found in cache.</p>';
-                    }
-                    container.innerHTML += connectionsHtml;
-                })
-                .catch(error => {
-                    const sanitizedError = sanitize(error.toString());
-                    document.getElementById('cache-container').textContent = 'Error loading cache data: ' + sanitizedError;
+            // Helper to create a table from an array of objects
+            function createTable(title, headers, dataRows) {
+                let html = `<h2>${sanitize(title)}</h2>`;
+                if (dataRows.length === 0) {
+                    html += '<p>No data found in cache.</p>';
+                    return html;
+                }
+                html += '<table><thead><tr>';
+                headers.forEach(h => html += `<th>${sanitize(h)}</th>`);
+                html += '</tr></thead><tbody>';
+                dataRows.forEach(row => {
+                    html += '<tr>';
+                    row.forEach(cell => html += `<td>${cell}</td>`); // Cells are pre-sanitized
+                    html += '</tr>';
                 });
+                html += '</tbody></table>';
+                return html;
+            }
+
+            // Function to update the last updated timestamp
+            function updateTimestamp() {
+                const now = new Date();
+                const timeString = now.toLocaleTimeString();
+                lastUpdatedEl.textContent = `Last updated: ${timeString}`;
+            }
+
+            // Function to fetch and render cache data
+            function fetchAndRenderCache() {
+                // Show loading state on refresh button
+                refreshButton.setAttribute('aria-busy', 'true');
+                refreshButton.disabled = true;
+                
+                fetch('/api/cache')
+                    .then(response => response.json())
+                    .then(initialData => {
+                        const data = sanitizeData(initialData); // Sanitize all incoming data
+                        cacheContainer.innerHTML = ''; // Clear previous content
+
+                        // 1. Tunnels Summary Table
+                        const tunnels = Object.values(data.tunnels || {}).map(t => t.tunnel_object);
+                        const tunnelRows = tunnels.map(t => [t.name, t.status, t.tun_type]);
+                        cacheContainer.innerHTML += createTable('Tunnels', ['Name', 'Status', 'Type'], tunnelRows);
+
+                        // 2. Application Policies Table
+                        const policies = Object.values(data.access_policies || {});
+                        const policyRows = policies.map(p => [p.name, p.decision, p.app_count || 0]);
+                        cacheContainer.innerHTML += createTable('Application Policies', ['Name', 'Decision', 'App Count'], policyRows);
+
+                        // 3. Identity Providers Table
+                        const idps = Object.values(data.identity_providers || {});
+                        const idpRows = idps.map(idp => [
+                            idp.name,
+                            idp.config?.client_id || 'N/A',
+                            idp.config?.redirect_url || 'N/A'
+                        ]);
+                        cacheContainer.innerHTML += createTable('Identity Providers', ['Name', 'Client ID', 'Redirect URL'], idpRows);
+
+                        // 4. Access Applications Table
+                        const apps = Object.values(data.access_applications || {});
+                        const policyCache = data.access_policies || {};
+                        const appRows = apps.map(app => {
+                            const appPolicies = (app.policies || [])
+                                .map(p => {
+                                    const foundPolicy = Object.values(policyCache).find(cachedPolicy => cachedPolicy.id === p.id);
+                                    return foundPolicy ? foundPolicy.name : p.id;
+                                })
+                                .join(', ');
+                            return [
+                                app.domain,
+                                app.type,
+                                appPolicies || '<i>None</i>',
+                                app.auto_redirect_to_identity ? '✅ True' : '❌ False'
+                            ];
+                        });
+                        cacheContainer.innerHTML += createTable('Access Applications', ['Domain', 'Type', 'Policies', 'Instant Auth'], appRows);
+
+                        // 5. Tunnel - Current Hostnames Table
+                        const tunnelsData = data.tunnels || {};
+                        let connectionsHtml = `<h2>Tunnel - Current Hostnames</h2>`;
+                        if (Object.keys(tunnelsData).length > 0) {
+                            for (const tunnelId in tunnelsData) {
+                                const tunnelInfo = tunnelsData[tunnelId];
+                                const tunnelName = tunnelInfo.tunnel_object.name;
+                                const connections = tunnelInfo.connections || [];
+
+                                connectionsHtml += `<h3>${sanitize(tunnelName)}</h3>`;
+                                connectionsHtml += `
+                                    <table>
+                                        <thead>
+                                            <tr><th>Hostname</th><th>Service</th></tr>
+                                        </thead>
+                                        <tbody>
+                                            ${connections.length > 0 ? connections.map(conn => `
+                                                <tr>
+                                                    <td>${conn.hostname || '<i>(Catch-all)</i>'}</td>
+                                                    <td>${conn.service}</td>
+                                                </tr>
+                                            `).join('') : '<tr><td colspan="2">No connections configured for this tunnel.</td></tr>'}
+                                        </tbody>
+                                    </table>
+                                `;
+                            }
+                        } else {
+                            connectionsHtml += '<p>No tunnels found in cache.</p>';
+                        }
+                        cacheContainer.innerHTML += connectionsHtml;
+                        
+                        // Update timestamp
+                        updateTimestamp();
+                    })
+                    .catch(error => {
+                        const sanitizedError = sanitize(error.toString());
+                        cacheContainer.innerHTML = '<p role="alert">Error loading cache data: ' + sanitizedError + '</p>';
+                        lastUpdatedEl.textContent = 'Update failed';
+                    })
+                    .finally(() => {
+                        // Remove loading state from refresh button
+                        refreshButton.setAttribute('aria-busy', 'false');
+                        refreshButton.disabled = false;
+                    });
+            }
+
+            // 3. Manual refresh button
+            refreshButton.addEventListener('click', (event) => {
+                event.preventDefault();
+                fetchAndRenderCache();
+            });
+
+            // 4. Start auto-refresh
+            function startAutoRefresh() {
+                // Clear any existing interval
+                if (refreshInterval) {
+                    clearInterval(refreshInterval);
+                }
+                // Set up new interval
+                refreshInterval = setInterval(fetchAndRenderCache, AUTO_REFRESH_INTERVAL);
+            }
+
+            // 5. Initial fetch and start auto-refresh
+            fetchAndRenderCache();
+            startAutoRefresh();
+            
+            // 6. Stop auto-refresh when tab is not visible to save resources
+            document.addEventListener('visibilitychange', () => {
+                if (document.hidden) {
+                    if (refreshInterval) {
+                        clearInterval(refreshInterval);
+                        refreshInterval = null;
+                    }
+                } else {
+                    // Resume auto-refresh and do an immediate refresh when tab becomes visible
+                    fetchAndRenderCache();
+                    startAutoRefresh();
+                }
+            });
         });
     </script>
 </body>
