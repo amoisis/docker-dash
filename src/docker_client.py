@@ -13,6 +13,9 @@ _last_processed_time = {}
 _container_ingress_state = {}
 _debounce_delay_seconds = 10
 
+# Container status tracking for diagnostics
+_container_status = {}
+
 # Event listener control
 _event_stream = None
 _docker_client = None
@@ -31,6 +34,12 @@ def get_docker_client():
     except Exception as e:
         logging.error(f"Failed to connect to Docker daemon: {e}")
         return None
+
+def get_container_statuses():
+    """
+    Returns a copy of the container status dictionary for diagnostics.
+    """
+    return dict(_container_status)
 
 def process_container(container):
     """
@@ -74,7 +83,31 @@ def process_container(container):
 
         # If the container is not enabled or is missing labels, we are done.
         if not is_enabled:
-            logging.info(f"Container '{container.name}' is disabled or misconfigured. Ensuring no active rules.")
+            # Determine if disabled or misconfigured
+            if enable_label != "true":
+                logging.debug(f"Container '{container.name}' is disabled (docker.dash.enable != true). Skipping.")
+                _container_status[container_id] = {
+                    "name": container.name,
+                    "status": "disabled",
+                    "reason": "docker.dash.enable is not set to 'true'",
+                    "labels": dash_labels
+                }
+            else:
+                # Enabled but missing required labels
+                missing = []
+                if not new_tunnel_name:
+                    missing.append("docker.dash.tunnel")
+                if not new_hostname:
+                    missing.append("docker.dash.hostname")
+                if not new_service:
+                    missing.append("docker.dash.service")
+                logging.warning(f"Container '{container.name}' is misconfigured. Missing required labels: {', '.join(missing)}")
+                _container_status[container_id] = {
+                    "name": container.name,
+                    "status": "misconfigured",
+                    "reason": f"Missing required labels: {', '.join(missing)}",
+                    "labels": dash_labels
+                }
             _container_ingress_state.pop(container_id, None) # Clean up state
             _last_processed_time[container_id] = current_time
             return
@@ -102,6 +135,16 @@ def process_container(container):
             access_config = {k: v for k, v in access_config.items() if v is not None}
             add_or_update_access_application(new_hostname, access_config)
 
+        # Update container status to active
+        _container_status[container_id] = {
+            "name": container.name,
+            "status": "active",
+            "tunnel": new_tunnel_name,
+            "hostname": new_hostname,
+            "service": new_service,
+            "has_access_policy": bool(access_policy),
+            "labels": dash_labels
+        }
         _last_processed_time[container_id] = current_time
 
     except Exception as e:
@@ -168,7 +211,10 @@ def start_event_listener():
                         logging.info(f"Container {container_id[:12]} stopped. Removing ingress rule: {old_hostname} from {old_tunnel}")
                         remove_ingress_rule(old_tunnel, old_hostname)
                         remove_access_application(old_hostname)
-                    else: # Fallback for containers that were not in the state
+                    # Clean up status tracking
+                    _container_status.pop(container_id, None)
+                    if not container_id in _container_ingress_state:
+                        # Fallback for containers that were not in the state
                         attributes = event.get("Actor", {}).get("Attributes", {})
                         label_prefix = "docker.dash."
                         dash_labels = {

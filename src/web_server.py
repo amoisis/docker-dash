@@ -4,6 +4,7 @@ import logging
 import os
 from waitress import serve
 from cloudflare_client import get_consolidated_cache, CloudflareJSONEncoder
+from docker_client import get_container_statuses
 
 # Determine the absolute path to the templates directory
 _current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -20,6 +21,14 @@ def wsgi_app(environ, start_response):
         start_response(status, headers)
         cache_data = get_consolidated_cache()
         json_data = json.dumps(cache_data, cls=CloudflareJSONEncoder, indent=2)
+        return [json_data.encode("utf-8")]
+    
+    elif path == "/api/containers":
+        status = '200 OK'
+        headers = [('Content-type', 'application/json')]
+        start_response(status, headers)
+        container_data = get_container_statuses()
+        json_data = json.dumps(container_data, indent=2)
         return [json_data.encode("utf-8")]
     
     elif path == "/":

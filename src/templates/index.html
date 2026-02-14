@@ -3,40 +3,281 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>docker-dash - Cache Viewer</title>
+    <title>docker-dash - Dashboard</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@1/css/pico.min.css">
     <style>
+        :root {
+            --status-active: #10b981;
+            --status-warning: #f59e0b;
+            --status-error: #ef4444;
+            --status-disabled: #6b7280;
+            --card-hover: rgba(255, 255, 255, 0.05);
+        }
+        
         body {
+            padding: 0.5rem;
+            background: var(--background-color);
+        }
+        
+        .container {
+            max-width: 1400px;
+        }
+        
+        /* Header & Navigation */
+        nav {
+            margin-bottom: 2rem;
             padding: 1rem;
+            background: var(--card-background-color);
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
         }
-        h2 {
-            margin-top: 2.5rem;
+        
+        nav h1 {
+            margin: 0;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
         }
-        h3 {
-            margin-top: 2rem;
+        
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--status-active);
+            animation: pulse 2s infinite;
         }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
+        /* Stats Grid */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+            margin-bottom: 2rem;
+        }
+        
+        .stat-card {
+            background: var(--card-background-color);
+            padding: 1.5rem;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        
+        .stat-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+        }
+        
+        .stat-card h3 {
+            margin: 0 0 0.5rem 0;
+            font-size: 0.875rem;
+            color: var(--muted-color);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        
+        .stat-value {
+            font-size: 2rem;
+            font-weight: 700;
+            margin: 0;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        
+        .stat-icon {
+            font-size: 1.5rem;
+        }
+        
+        /* Section Cards */
+        .section-card {
+            background: var(--card-background-color);
+            padding: 1.5rem;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 1.5rem;
+            animation: fadeIn 0.3s ease-in;
+        }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        
+        .section-card h2 {
+            margin-top: 0;
+            margin-bottom: 1rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 1.5rem;
+        }
+        
+        .section-card h3 {
+            margin-top: 1.5rem;
+            margin-bottom: 1rem;
+            font-size: 1.1rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        
+        /* Status Badges */
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.25rem;
+            padding: 0.25rem 0.75rem;
+            border-radius: 999px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        
+        .badge-active {
+            background: rgba(16, 185, 129, 0.1);
+            color: var(--status-active);
+        }
+        
+        .badge-warning {
+            background: rgba(245, 158, 11, 0.1);
+            color: var(--status-warning);
+        }
+        
+        .badge-error {
+            background: rgba(239, 68, 68, 0.1);
+            color: var(--status-error);
+        }
+        
+        .badge-disabled {
+            background: rgba(107, 114, 128, 0.1);
+            color: var(--status-disabled);
+        }
+        
+        /* Tables */
         table {
-            overflow-x: auto;
+            width: 100%;
+            margin: 0;
         }
-        pre {
-            font-size: 0.8rem;
-            background-color: var(--card-background-color);
-            border: 1px solid var(--card-border-color);
+        
+        table tbody tr {
+            transition: background-color 0.2s;
+        }
+        
+        table tbody tr:hover {
+            background: var(--card-hover);
+        }
+        
+        /* Loading States */
+        .loading-bar {
+            height: 3px;
+            background: linear-gradient(90deg, var(--primary), var(--secondary));
+            border-radius: 3px;
+            animation: loading 1.5s infinite;
+            margin-bottom: 1rem;
+        }
+        
+        @keyframes loading {
+            0% { transform: translateX(-100%); }
+            100% { transform: translateX(100%); }
+        }
+        
+        /* Details/Summary */
+        details {
+            border: 1px solid var(--muted-border-color);
+            border-radius: 8px;
+            padding: 1rem;
+            margin-top: 1rem;
+        }
+        
+        details summary {
+            cursor: pointer;
+            font-weight: 600;
+            user-select: none;
+        }
+        
+        details[open] summary {
+            margin-bottom: 1rem;
+        }
+        
+        /* Empty States */
+        .empty-state {
+            text-align: center;
+            padding: 3rem 1rem;
+            color: var(--muted-color);
+        }
+        
+        .empty-state-icon {
+            font-size: 3rem;
+            margin-bottom: 1rem;
+            opacity: 0.5;
+        }
+        
+        /* Responsive */
+        @media (max-width: 768px) {
+            .stats-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .stat-value {
+                font-size: 1.5rem;
+            }
+        }
+        
+        /* Auto-refresh indicator */
+        .refresh-indicator {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.875rem;
+            color: var(--muted-color);
+        }
+        
+        .refresh-progress {
+            width: 60px;
+            height: 4px;
+            background: var(--muted-border-color);
+            border-radius: 2px;
+            overflow: hidden;
+        }
+        
+        .refresh-progress-bar {
+            height: 100%;
+            background: var(--primary);
+            transition: width 1s linear;
         }
     </style>
 </head>
 <body>
     <main class="container">
         <nav>
-            <h1>docker-dash</h1>
+            <h1>
+                <span class="status-dot"></span>
+                docker-dash
+            </h1>
             <ul>
-                <li><small id="last-updated" style="margin-right: 1rem;">Loading...</small></li>
+                <li>
+                    <div class="refresh-indicator">
+                        <small id="last-updated">Loading...</small>
+                        <div class="refresh-progress">
+                            <div class="refresh-progress-bar" id="refresh-progress"></div>
+                        </div>
+                    </div>
+                </li>
                 <li><button id="refresh-button" class="secondary">🔄 Refresh</button></li>
-                <li><a href="#" role="button" id="theme-toggle"></a></li>
+                <li><a href="#" role="button" id="theme-toggle" class="secondary"></a></li>
             </ul>
         </nav>
+        
+        <div id="stats-overview"></div>
         <div id="cache-container">
-            <p aria-busy="true">Loading cache data...</p>
+            <p aria-busy="true">Loading dashboard data...</p>
         </div>
     </main>
 
@@ -47,10 +288,13 @@
             const refreshButton = document.getElementById('refresh-button');
             const lastUpdatedEl = document.getElementById('last-updated');
             const cacheContainer = document.getElementById('cache-container');
+            const statsOverview = document.getElementById('stats-overview');
+            const refreshProgress = document.getElementById('refresh-progress');
             
             // Auto-refresh interval in milliseconds (30 seconds)
             const AUTO_REFRESH_INTERVAL = 30000;
             let refreshInterval = null;
+            let progressInterval = null;
 
             // Sanitizer function to prevent XSS
             function sanitize(text) {
@@ -77,11 +321,6 @@
                     return sanitizedObject;
                 }
                 if (typeof data === 'string') {
-                    // Allow certain HTML tags for display purposes, but sanitize the content
-                    const allowedTags = /^(<i>|<\/i>|✅|❌)$/;
-                    if (allowedTags.test(data)) {
-                        return data;
-                    }
                     return sanitize(data);
                 }
                 return data;
@@ -89,7 +328,7 @@
 
             function updateButtonText() {
                 const currentTheme = html.getAttribute('data-theme');
-                themeToggle.textContent = currentTheme === 'dark' ? 'Light Mode' : 'Dark Mode';
+                themeToggle.textContent = currentTheme === 'dark' ? '☀️ Light' : '🌙 Dark';
             }
 
             // 1. On load, apply saved theme and update button text
@@ -110,18 +349,16 @@
             });
 
             // Helper to create a table from an array of objects
-            function createTable(title, headers, dataRows) {
-                let html = `<h2>${sanitize(title)}</h2>`;
+            function createTable(headers, dataRows) {
                 if (dataRows.length === 0) {
-                    html += '<p>No data found in cache.</p>';
-                    return html;
+                    return '<div class="empty-state"><div class="empty-state-icon">📭</div><p>No data available</p></div>';
                 }
-                html += '<table><thead><tr>';
+                let html = '<table><thead><tr>';
                 headers.forEach(h => html += `<th>${sanitize(h)}</th>`);
                 html += '</tr></thead><tbody>';
                 dataRows.forEach(row => {
                     html += '<tr>';
-                    row.forEach(cell => html += `<td>${cell}</td>`); // Cells are pre-sanitized
+                    row.forEach(cell => html += `<td>${cell}</td>`);
                     html += '</tr>';
                 });
                 html += '</tbody></table>';
@@ -132,7 +369,22 @@
             function updateTimestamp() {
                 const now = new Date();
                 const timeString = now.toLocaleTimeString();
-                lastUpdatedEl.textContent = `Last updated: ${timeString}`;
+                lastUpdatedEl.textContent = `Updated ${timeString}`;
+            }
+            
+            // Progress bar animation
+            function startProgressBar() {
+                if (progressInterval) clearInterval(progressInterval);
+                refreshProgress.style.width = '0%';
+                const startTime = Date.now();
+                progressInterval = setInterval(() => {
+                    const elapsed = Date.now() - startTime;
+                    const progress = (elapsed / AUTO_REFRESH_INTERVAL) * 100;
+                    refreshProgress.style.width = Math.min(progress, 100) + '%';
+                    if (progress >= 100) {
+                        clearInterval(progressInterval);
+                    }
+                }, 100);
             }
 
             // Function to fetch and render cache data
@@ -141,87 +393,206 @@
                 refreshButton.setAttribute('aria-busy', 'true');
                 refreshButton.disabled = true;
                 
-                fetch('/api/cache')
-                    .then(response => response.json())
-                    .then(initialData => {
-                        const data = sanitizeData(initialData); // Sanitize all incoming data
+                // Fetch both cache and container data in parallel
+                Promise.all([
+                    fetch('/api/cache').then(r => r.json()),
+                    fetch('/api/containers').then(r => r.json())
+                ])
+                    .then(([cacheData, containerData]) => {
+                        const data = sanitizeData(cacheData);
+                        const containers = sanitizeData(containerData);
+                        
+                        // Calculate stats
+                        const containerIds = Object.keys(containers);
+                        const activeCount = containerIds.filter(id => containers[id].status === 'active').length;
+                        const misconfiguredCount = containerIds.filter(id => containers[id].status === 'misconfigured').length;
+                        const disabledCount = containerIds.filter(id => containers[id].status === 'disabled').length;
+                        const tunnelCount = Object.keys(data.tunnels || {}).length;
+                        const appCount = Object.values(data.access_applications || {}).length;
+                        
+                        // Render stats overview
+                        statsOverview.innerHTML = `
+                            <div class="stats-grid">
+                                <div class="stat-card">
+                                    <h3>Active Containers</h3>
+                                    <p class="stat-value">
+                                        <span class="stat-icon">✅</span>
+                                        ${activeCount}
+                                    </p>
+                                </div>
+                                <div class="stat-card">
+                                    <h3>Misconfigured</h3>
+                                    <p class="stat-value">
+                                        <span class="stat-icon">⚠️</span>
+                                        ${misconfiguredCount}
+                                    </p>
+                                </div>
+                                <div class="stat-card">
+                                    <h3>Cloudflare Tunnels</h3>
+                                    <p class="stat-value">
+                                        <span class="stat-icon">🔌</span>
+                                        ${tunnelCount}
+                                    </p>
+                                </div>
+                                <div class="stat-card">
+                                    <h3>Access Apps</h3>
+                                    <p class="stat-value">
+                                        <span class="stat-icon">🔐</span>
+                                        ${appCount}
+                                    </p>
+                                </div>
+                            </div>
+                        `;
+                        
                         cacheContainer.innerHTML = ''; // Clear previous content
 
-                        // 1. Tunnels Summary Table
+                        // Container Status Section
+                        if (containerIds.length > 0) {
+                            const activeContainers = [];
+                            const disabledContainers = [];
+                            const misconfiguredContainers = [];
+                            
+                            containerIds.forEach(id => {
+                                const container = containers[id];
+                                if (container.status === 'active') {
+                                    activeContainers.push(container);
+                                } else if (container.status === 'disabled') {
+                                    disabledContainers.push(container);
+                                } else if (container.status === 'misconfigured') {
+                                    misconfiguredContainers.push(container);
+                                }
+                            });
+                            
+                            let containerHtml = '<div class="section-card"><h2>📦 Container Status</h2>';
+                            
+                            // Active containers
+                            if (activeContainers.length > 0) {
+                                containerHtml += '<h3><span class="badge badge-active">Active (' + activeContainers.length + ')</span></h3>';
+                                const activeRows = activeContainers.map(c => [
+                                    c.name,
+                                    c.tunnel,
+                                    c.hostname,
+                                    c.service,
+                                    c.has_access_policy ? '<span class="badge badge-active">Yes</span>' : '<span class="badge badge-disabled">No</span>'
+                                ]);
+                                containerHtml += createTable(['Container', 'Tunnel', 'Hostname', 'Service', 'Access Policy'], activeRows);
+                            }
+                            
+                            // Misconfigured containers
+                            if (misconfiguredContainers.length > 0) {
+                                containerHtml += '<h3><span class="badge badge-warning">Misconfigured (' + misconfiguredContainers.length + ')</span></h3>';
+                                const misconfiguredRows = misconfiguredContainers.map(c => [
+                                    c.name,
+                                    '<mark>' + c.reason + '</mark>'
+                                ]);
+                                containerHtml += createTable(['Container', 'Issue'], misconfiguredRows);
+                            }
+                            
+                            // Disabled containers (collapsed)
+                            if (disabledContainers.length > 0) {
+                                containerHtml += '<details><summary><span class="badge badge-disabled">Disabled (' + disabledContainers.length + ')</span></summary>';
+                                const disabledRows = disabledContainers.map(c => [c.name, c.reason]);
+                                containerHtml += createTable(['Container', 'Reason'], disabledRows);
+                                containerHtml += '</details>';
+                            }
+                            
+                            containerHtml += '</div>';
+                            cacheContainer.innerHTML += containerHtml;
+                        }
+
+                        // Tunnels Section
                         const tunnels = Object.values(data.tunnels || {}).map(t => t.tunnel_object);
-                        const tunnelRows = tunnels.map(t => [t.name, t.status, t.tun_type]);
-                        cacheContainer.innerHTML += createTable('Tunnels', ['Name', 'Status', 'Type'], tunnelRows);
+                        if (tunnels.length > 0) {
+                            let tunnelHtml = '<div class="section-card"><h2>🔌 Cloudflare Tunnels</h2>';
+                            const tunnelRows = tunnels.map(t => [
+                                t.name,
+                                '<span class="badge badge-active">' + t.status + '</span>',
+                                t.tun_type
+                            ]);
+                            tunnelHtml += createTable(['Name', 'Status', 'Type'], tunnelRows);
+                            tunnelHtml += '</div>';
+                            cacheContainer.innerHTML += tunnelHtml;
+                        }
 
-                        // 2. Application Policies Table
-                        const policies = Object.values(data.access_policies || {});
-                        const policyRows = policies.map(p => [p.name, p.decision, p.app_count || 0]);
-                        cacheContainer.innerHTML += createTable('Application Policies', ['Name', 'Decision', 'App Count'], policyRows);
-
-                        // 3. Identity Providers Table
-                        const idps = Object.values(data.identity_providers || {});
-                        const idpRows = idps.map(idp => [
-                            idp.name,
-                            idp.config?.client_id || 'N/A',
-                            idp.config?.redirect_url || 'N/A'
-                        ]);
-                        cacheContainer.innerHTML += createTable('Identity Providers', ['Name', 'Client ID', 'Redirect URL'], idpRows);
-
-                        // 4. Access Applications Table
-                        const apps = Object.values(data.access_applications || {});
-                        const policyCache = data.access_policies || {};
-                        const appRows = apps.map(app => {
-                            const appPolicies = (app.policies || [])
-                                .map(p => {
-                                    const foundPolicy = Object.values(policyCache).find(cachedPolicy => cachedPolicy.id === p.id);
-                                    return foundPolicy ? foundPolicy.name : p.id;
-                                })
-                                .join(', ');
-                            return [
-                                app.domain,
-                                app.type,
-                                appPolicies || '<i>None</i>',
-                                app.auto_redirect_to_identity ? '✅ True' : '❌ False'
-                            ];
-                        });
-                        cacheContainer.innerHTML += createTable('Access Applications', ['Domain', 'Type', 'Policies', 'Instant Auth'], appRows);
-
-                        // 5. Tunnel - Current Hostnames Table
+                        // Tunnel Connections Section
                         const tunnelsData = data.tunnels || {};
-                        let connectionsHtml = `<h2>Tunnel - Current Hostnames</h2>`;
                         if (Object.keys(tunnelsData).length > 0) {
+                            let connectionsHtml = '<div class="section-card"><h2>🌐 Tunnel Routes</h2>';
                             for (const tunnelId in tunnelsData) {
                                 const tunnelInfo = tunnelsData[tunnelId];
                                 const tunnelName = tunnelInfo.tunnel_object.name;
                                 const connections = tunnelInfo.connections || [];
 
-                                connectionsHtml += `<h3>${sanitize(tunnelName)}</h3>`;
-                                connectionsHtml += `
-                                    <table>
-                                        <thead>
-                                            <tr><th>Hostname</th><th>Service</th></tr>
-                                        </thead>
-                                        <tbody>
-                                            ${connections.length > 0 ? connections.map(conn => `
-                                                <tr>
-                                                    <td>${conn.hostname || '<i>(Catch-all)</i>'}</td>
-                                                    <td>${conn.service}</td>
-                                                </tr>
-                                            `).join('') : '<tr><td colspan="2">No connections configured for this tunnel.</td></tr>'}
-                                        </tbody>
-                                    </table>
-                                `;
+                                connectionsHtml += `<h3>${sanitize(tunnelName)} <span class="badge badge-active">${connections.length} routes</span></h3>`;
+                                const connRows = connections.map(conn => [
+                                    conn.hostname || '<i>(Catch-all)</i>',
+                                    conn.service
+                                ]);
+                                connectionsHtml += createTable(['Hostname', 'Service'], connRows);
                             }
-                        } else {
-                            connectionsHtml += '<p>No tunnels found in cache.</p>';
+                            connectionsHtml += '</div>';
+                            cacheContainer.innerHTML += connectionsHtml;
                         }
-                        cacheContainer.innerHTML += connectionsHtml;
+
+                        // Access Applications Section
+                        const apps = Object.values(data.access_applications || {});
+                        if (apps.length > 0) {
+                            let appsHtml = '<div class="section-card"><h2>🔐 Cloudflare Access Applications</h2>';
+                            const policyCache = data.access_policies || {};
+                            const appRows = apps.map(app => {
+                                const appPolicies = (app.policies || [])
+                                    .map(p => {
+                                        const foundPolicy = Object.values(policyCache).find(cachedPolicy => cachedPolicy.id === p.id);
+                                        return foundPolicy ? foundPolicy.name : p.id;
+                                    })
+                                    .join(', ');
+                                return [
+                                    app.domain,
+                                    app.type,
+                                    appPolicies || '<i>None</i>',
+                                    app.auto_redirect_to_identity ? '<span class="badge badge-active">Enabled</span>' : '<span class="badge badge-disabled">Disabled</span>'
+                                ];
+                            });
+                            appsHtml += createTable(['Domain', 'Type', 'Policies', 'Instant Auth'], appRows);
+                            appsHtml += '</div>';
+                            cacheContainer.innerHTML += appsHtml;
+                        }
+
+                        // Application Policies Section
+                        const policies = Object.values(data.access_policies || {});
+                        if (policies.length > 0) {
+                            let policiesHtml = '<div class="section-card"><h2>📋 Access Policies</h2>';
+                            const policyRows = policies.map(p => [
+                                p.name,
+                                '<span class="badge badge-active">' + p.decision + '</span>',
+                                p.app_count || 0
+                            ]);
+                            policiesHtml += createTable(['Name', 'Decision', 'App Count'], policyRows);
+                            policiesHtml += '</div>';
+                            cacheContainer.innerHTML += policiesHtml;
+                        }
+
+                        // Identity Providers Section
+                        const idps = Object.values(data.identity_providers || {});
+                        if (idps.length > 0) {
+                            let idpsHtml = '<div class="section-card"><h2>🔑 Identity Providers</h2>';
+                            const idpRows = idps.map(idp => [
+                                idp.name,
+                                idp.config?.client_id || 'N/A',
+                                idp.config?.redirect_url || 'N/A'
+                            ]);
+                            idpsHtml += createTable(['Name', 'Client ID', 'Redirect URL'], idpRows);
+                            idpsHtml += '</div>';
+                            cacheContainer.innerHTML += idpsHtml;
+                        }
                         
-                        // Update timestamp
+                        // Update timestamp and progress
                         updateTimestamp();
+                        startProgressBar();
                     })
                     .catch(error => {
                         const sanitizedError = sanitize(error.toString());
-                        cacheContainer.innerHTML = '<p role="alert">Error loading cache data: ' + sanitizedError + '</p>';
+                        cacheContainer.innerHTML = '<div class="section-card"><p role="alert">❌ Error loading dashboard data: ' + sanitizedError + '</p></div>';
                         lastUpdatedEl.textContent = 'Update failed';
                     })
                     .finally(() => {
@@ -257,6 +628,10 @@
                     if (refreshInterval) {
                         clearInterval(refreshInterval);
                         refreshInterval = null;
+                    }
+                    if (progressInterval) {
+                        clearInterval(progressInterval);
+                        progressInterval = null;
                     }
                 } else {
                     // Resume auto-refresh and do an immediate refresh when tab becomes visible
