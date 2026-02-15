@@ -541,6 +541,9 @@ def add_or_update_ingress_rule(tunnel_name: str, new_rule: dict, manager=None):
     # Check if the exact rule already exists
     if any(r.hostname == new_hostname and r.service == new_rule.get("service") for r in current_rules):
         logging.info(f"Ingress rule '{new_hostname}' -> '{new_rule.get('service')}' already exists for tunnel '{tunnel_name}'. No update needed.")
+        # Still ensure DNS record exists for this hostname
+        logging.debug(f"Ensuring DNS record exists for existing ingress rule '{new_hostname}'")
+        ensure_cname_record_exists(new_hostname, tunnel_name, manager)
         return
 
     logging.info(f"Updating ingress rules for tunnel '{tunnel_name}' to set route for '{new_hostname}'.")
