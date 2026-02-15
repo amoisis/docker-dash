@@ -75,7 +75,76 @@ services:
 |---|---|---|
 | `CF_API_TOKEN` | **Yes** | Your Cloudflare API Token with the required permissions. |
 | `CF_ACCOUNT_ID` | **Yes** | Your Cloudflare Account ID. |
-| `LOG_LEVEL` | **No** |. Defaults to `INFO`. |
+| `LOG_LEVEL` | **No** | Logging level. Defaults to `INFO`. |
+| `CACHE_REFRESH_INTERVAL` | **No** | How often (in seconds) to refresh the Cloudflare cache. Defaults to `300` (5 minutes). |
+| `MANAGE_DNS_RECORDS` | **No** | Set to `false` to disable automatic DNS record creation/updates. Defaults to `true`. |
+| `DNS_HA_MODE` | **No** | Set to `true` to enable High Availability mode. When enabled, if a DNS record points to a different tunnel, it won't be updated (allows multiple tunnels to serve the same hostname). Defaults to `false`. |
+
+## High Availability (HA) Configuration
+
+Cloudflare Tunnels natively support high availability when multiple tunnels serve the same hostname. To enable this:
+
+### How It Works
+
+1. **Configure the same hostname in multiple tunnels** - Add ingress rules for the same hostname to different tunnels
+2. **Cloudflare handles load balancing** - Cloudflare's infrastructure automatically:
+   - Detects all active tunnels serving a hostname
+   - Load balances traffic between them
+   - Automatically fails over if a tunnel becomes unavailable
+
+### Using docker-dash for HA
+
+**Option 1: Enable DNS_HA_MODE (Recommended for HA)**
+
+Set `DNS_HA_MODE=true` in your docker-dash environment. This tells docker-dash to:
+- Create ingress rules in multiple tunnels without updating DNS
+- Leave existing DNS records pointing to any tunnel (Cloudflare handles routing)
+- Log when DNS points to a different tunnel without changing it
+
+```yaml
+environment:
+  - DNS_HA_MODE=true
+```
+
+**Option 2: Manual DNS Management**
+
+Set `MANAGE_DNS_RECORDS=false` to disable automatic DNS updates entirely:
+- docker-dash will only manage tunnel ingress rules
+- You manually create DNS records pointing to one of your tunnels
+- Cloudflare automatically uses all tunnels with matching ingress rules
+
+```yaml
+environment:
+  - MANAGE_DNS_RECORDS=false
+```
+
+**Option 3: Single Tunnel (Default)**
+
+With default settings, docker-dash will:
+- Update DNS records to point to the tunnel being configured
+- Only one tunnel will actively serve each hostname
+
+### Example HA Setup
+
+```yaml
+# On Server 1
+services:
+  app:
+    labels:
+      - "docker.dash.tunnel=server1-tunnel"
+      - "docker.dash.hostname=app.example.com"
+      - "docker.dash.service=http://app:8080"
+
+# On Server 2  
+services:
+  app:
+    labels:
+      - "docker.dash.tunnel=server2-tunnel"
+      - "docker.dash.hostname=app.example.com"
+      - "docker.dash.service=http://app:8080"
+```
+
+With `DNS_HA_MODE=true`, both tunnels will serve `app.example.com` with automatic failover.
 
 ## Configuration via Docker Labels
 

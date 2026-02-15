@@ -348,7 +348,8 @@ def populate_zones_cache(cf_client, manager=None):
         logging.info("Fetching Cloudflare DNS zones...")
         zones = list(cf_client.zones.list())
         manager.zones_cache = {zone.name: zone for zone in zones}
-        logging.debug(f"Cached {len(manager.zones_cache)} DNS zones.")
+        logging.info(f"Cached {len(manager.zones_cache)} DNS zones.")
+        logging.debug(f"Zone names in cache: {list(manager.zones_cache.keys())}")
     except cloudflare.APIError as e:
         logging.error(f"Failed to fetch Cloudflare DNS zones: {e}")
         logging.error("Zone cache population failed. DNS record operations may not work correctly.")
@@ -557,6 +558,7 @@ def add_or_update_ingress_rule(tunnel_name: str, new_rule: dict, manager=None):
 
     try:
         logging.info(f"Updating tunnel '{tunnel_name}' ({tunnel_id}) with new ingress configuration.")
+        logging.debug(f"Payload: {config_payload}")
         config_response = retry_on_api_error()(
             lambda: manager.cf_client.zero_trust.tunnels.cloudflared.configurations.update(
                 account_id=manager.account_id,
@@ -565,14 +567,27 @@ def add_or_update_ingress_rule(tunnel_name: str, new_rule: dict, manager=None):
             )
         )()
 
-        # 5. Update the local cache with the new state
+        # Update the local cache with the new state
+        logging.debug(f"API Response type: {type(config_response)}, Response: {config_response}")
+        
         if config_response.config and hasattr(config_response.config, 'ingress'):
             manager.tunnel_cache[tunnel_id]["connections"] = config_response.config.ingress or []
-            logging.debug(f"Successfully updated tunnel '{tunnel_name}' and refreshed cache.")
-            ensure_cname_record_exists(new_hostname, tunnel_name, manager)
+            logging.debug(f"Successfully updated tunnel '{tunnel_name}' cache with {len(config_response.config.ingress or [])} ingress rules.")
+        else:
+            logging.debug(f"Response doesn't contain expected config.ingress structure, but update request succeeded.")
+            # Assume the update was successful even if we can't parse the response
+            manager.tunnel_cache[tunnel_id]["connections"] = updated_ingress_rules
+        
+        logging.info(f"Successfully updated tunnel '{tunnel_name}' ingress configuration.")
+        
+        # ALWAYS ensure DNS is created, regardless of cache update success
+        logging.debug(f"Attempting to create/update DNS record for hostname '{new_hostname}' pointing to tunnel '{tunnel_name}'")
+        ensure_cname_record_exists(new_hostname, tunnel_name, manager)
 
     except cloudflare.APIError as e:
         logging.error(f"Failed to update tunnel configuration for '{tunnel_name}': {e}")
+    except Exception as e:
+        logging.error(f"Unexpected error while updating tunnel '{tunnel_name}': {e}", exc_info=True)
 
 def ensure_cname_record_exists(hostname: str, tunnel_name: str, manager=None):
     """
@@ -589,16 +604,24 @@ def ensure_cname_record_exists(hostname: str, tunnel_name: str, manager=None):
     if manager is None:
         manager = _manager
     
+    logging.debug(f"[DNS] Ensuring CNAME record for '{hostname}' in tunnel '{tunnel_name}'")
+    
     # Validate inputs
     try:
         validate_hostname(hostname)
         validate_tunnel_name(tunnel_name)
     except ValidationError as e:
-        logging.error(f"Validation error in ensure_cname_record_exists: {e}")
+        logging.error(f"[DNS] Validation error in ensure_cname_record_exists: {e}")
         return
         
     if not manager.cf_client:
-        logging.error("Cloudflare client not initialized. Cannot create CNAME record.")
+        logging.error("[DNS] Cloudflare client not initialized. Cannot create CNAME record.")
+        return
+    
+    # Check if DNS management is disabled
+    manage_dns = os.environ.get("MANAGE_DNS_RECORDS", "true").lower() == "true"
+    if not manage_dns:
+        logging.info(f"[DNS] DNS management disabled (MANAGE_DNS_RECORDS=false) - skipping CNAME for '{hostname}'.")
         return
 
     # Find the zone for the hostname by finding longest matching suffix
@@ -606,35 +629,81 @@ def ensure_cname_record_exists(hostname: str, tunnel_name: str, manager=None):
     zone = None
     zone_name = None
     parts = hostname.split('.')
+    logging.debug(f"[DNS] Looking for zone for hostname '{hostname}', parts: {parts}")
+    logging.debug(f"[DNS] Available zones: {list(manager.zones_cache.keys())}")
+    
     for i in range(len(parts) - 1):
         potential_zone = '.'.join(parts[i:])
+        logging.debug(f"[DNS] Trying potential zone: '{potential_zone}'")
         if potential_zone in manager.zones_cache:
             zone = manager.zones_cache[potential_zone]
             zone_name = potential_zone
+            logging.debug(f"[DNS] Found matching zone: '{zone_name}'")
             break
     
     if not zone:
-        logging.error(f"No matching zone found in cache for hostname '{hostname}'. Cannot create CNAME record.")
-        logging.debug(f"Available zones: {list(manager.zones_cache.keys())}")
+        logging.error(f"[DNS] No matching zone found in cache for hostname '{hostname}'.")
+        logging.error(f"[DNS] This likely means the Cloudflare zone is not in the zone cache. Check your Cloudflare credentials and that the zone exists.")
         return
 
     # Find the tunnel to get its CNAME
     target_tunnel_data = next((data for data in manager.tunnel_cache.values() if data["tunnel_object"].name == tunnel_name), None)
     if not target_tunnel_data:
-        logging.error(f"Tunnel '{tunnel_name}' not found. Cannot create CNAME record.")
+        logging.error(f"[DNS] Tunnel '{tunnel_name}' not found in cache.")
         return
 
     tunnel_cname = f"{target_tunnel_data['tunnel_object'].id}.cfargotunnel.com"
+    logging.debug(f"[DNS] Tunnel '{tunnel_name}' → {tunnel_cname}")
+    
+    # Check if we should enable HA mode (don't update DNS if it already exists)
+    ha_mode = os.environ.get("DNS_HA_MODE", "false").lower() == "true"
+    logging.debug(f"[DNS] HA mode: {ha_mode}")
 
     try:
+        logging.debug(f"[DNS] Looking up existing records for '{hostname}' in zone '{zone_name}'")
         records = retry_on_api_error()(
             lambda: manager.cf_client.dns.records.list(zone_id=zone.id, name=hostname)
         )()
+        
+        logging.debug(f"[DNS] Found {len(records) if records else 0} existing record(s) for '{hostname}'")
+        
         if records:
-            logging.info(f"CNAME record for '{hostname}' already exists.")
-            return
+            # DNS record exists - check if it points to the correct tunnel
+            existing_record = records[0]  # Get first record (usually only one)
+            logging.debug(f"[DNS] Existing record: type={existing_record.type}, content={existing_record.content}, proxied={existing_record.proxied}")
+            
+            if existing_record.content == tunnel_cname:
+                logging.info(f"[DNS] ✓ CNAME record for '{hostname}' already points to tunnel '{tunnel_name}'.")
+                return
+            else:
+                # DNS points to a different tunnel
+                if ha_mode:
+                    logging.info(
+                        f"[DNS] HA mode enabled: CNAME for '{hostname}' points to '{existing_record.content}' "
+                        f"(not '{tunnel_cname}'). Leaving as-is for load balancing."
+                    )
+                    return
+                else:
+                    # Update the DNS record to point to the new tunnel
+                    logging.warning(
+                        f"[DNS] CNAME for '{hostname}' points to '{existing_record.content}' but should point to '{tunnel_cname}'. "
+                        f"Updating..."
+                    )
+                    retry_on_api_error()(
+                        lambda: manager.cf_client.dns.records.update(
+                            zone_id=zone.id,
+                            dns_record_id=existing_record.id,
+                            type="CNAME",
+                            name=hostname,
+                            content=tunnel_cname,
+                            proxied=True
+                        )
+                    )()
+                    logging.info(f"[DNS] ✓ Updated CNAME record for '{hostname}' → '{tunnel_cname}'")
+                return
 
-        logging.info(f"Creating CNAME record for '{hostname}' pointing to '{tunnel_cname}'.")
+        # No record exists - create one
+        logging.info(f"[DNS] Creating CNAME record for '{hostname}' → '{tunnel_cname}'")
         retry_on_api_error()(
             lambda: manager.cf_client.dns.records.create(
                 zone_id=zone.id,
@@ -644,9 +713,12 @@ def ensure_cname_record_exists(hostname: str, tunnel_name: str, manager=None):
                 proxied=True
             )
         )()
-        logging.info(f"Successfully created CNAME record for '{hostname}'.")
+        logging.info(f"[DNS] ✓ Successfully created CNAME record for '{hostname}'")
+            
     except cloudflare.APIError as e:
-        logging.error(f"Failed to create CNAME record for '{hostname}': {e}")
+        logging.error(f"[DNS] Cloudflare API error: {e}")
+    except Exception as e:
+        logging.error(f"[DNS] Unexpected error: {e}", exc_info=True)
 
 def remove_cname_record(hostname: str, manager=None):
     """
