@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>docker-dash - Dashboard</title>
-    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0%25' y1='0%25' x2='100%25' y2='100%25'%3E%3Cstop offset='0%25' style='stop-color:%2300d4ff'/%3E%3Cstop offset='100%25' style='stop-color:%230091ff'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect x='4' y='10' width='6' height='4' fill='url(%23g)'/%3E%3Crect x='11' y='10' width='6' height='4' fill='url(%23g)'/%3E%3Crect x='18' y='10' width='6' height='4' fill='url(%23g)'/%3E%3Crect x='4' y='15' width='6' height='8' fill='url(%23g)'/%3E%3Crect x='11' y='15' width='6' height='8' fill='url(%23g)'/%3E%3Crect x='18' y='15' width='6' height='8' fill='url(%23g)'/%3E%3Cpath d='M20 8 L26 20 L14 20 Z' fill='%23ffcc00' stroke='%23fff' stroke-width='0.5'/%3E%3C/svg%3E">
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0%25' y1='0%25' x2='100%25' y2='100%25'%3E%3Cstop offset='0%25' style='stop-color:%2317a2b8'/%3E%3Cstop offset='100%25' style='stop-color:%2300d4ff'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cg%3E%3Crect x='8' y='25' width='18' height='12' fill='url(%23g)' rx='2'/%3E%3Crect x='30' y='25' width='18' height='12' fill='url(%23g)' rx='2'/%3E%3Crect x='52' y='25' width='18' height='12' fill='url(%23g)' rx='2'/%3E%3Crect x='8' y='40' width='18' height='22' fill='url(%23g)' rx='2'/%3E%3Crect x='30' y='40' width='18' height='22' fill='url(%23g)' rx='2'/%3E%3Crect x='52' y='40' width='18' height='22' fill='url(%23g)' rx='2'/%3E%3C/g%3E%3Cpath d='M55 15 L75 55 L35 55 Z' fill='%2300d4ff' stroke='%23fff' stroke-width='1.5' stroke-linejoin='round'/%3E%3C/svg%3E">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@1/css/pico.min.css">
     <style>
         :root {
@@ -91,8 +91,14 @@
         }
         
         @keyframes pulse {
-            0%, 100% { opacity: 1; transform: scale(1); }
-            50% { opacity: 0.6; transform: scale(0.95); }
+            0%, 100% {
+                opacity: 1;
+                transform: scale(1);
+            }
+            50% {
+                opacity: 0.6;
+                transform: scale(0.95);
+            }
         }
         
         .nav-search {
@@ -120,6 +126,23 @@
             gap: 0.75rem;
             align-items: center;
             margin-left: auto;
+            flex-shrink: 0;
+        }
+        
+        /* Button Styles */
+        button,
+        a[role="button"],
+        input[type="submit"],
+        input[type="button"] {
+            border-radius: 8px;
+            font-weight: 600;
+            transition: all 0.2s ease;
+            cursor: pointer;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
         }
         
         .nav-actions button,
@@ -127,8 +150,28 @@
             margin: 0;
             padding: 0.5rem 1rem;
             font-size: 0.875rem;
+            line-height: 1.5;
+            min-height: 40px;
+            white-space: nowrap;
         }
         
+        button.secondary,
+        a[role="button"].secondary {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid var(--muted-border-color);
+            color: var(--color);
+        }
+        
+        button.secondary:hover,
+        a[role="button"].secondary:hover {
+            background: rgba(255, 255, 255, 0.1);
+            border-color: var(--brand-primary);
+            transform: translateY(-1px);
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+        }
+        
+        button.primary,
+        a[role="button"].primary,
         .btn-primary {
             background: linear-gradient(135deg, var(--brand-primary), var(--brand-secondary));
             border: none;
@@ -136,9 +179,18 @@
             font-weight: 600;
         }
         
+        button.primary:hover,
+        a[role="button"].primary:hover,
         .btn-primary:hover {
             transform: translateY(-1px);
             box-shadow: 0 4px 12px rgba(0, 212, 255, 0.3);
+        }
+        
+        button:disabled,
+        a[role="button"][aria-busy="true"] {
+            opacity: 0.6;
+            cursor: not-allowed;
+            pointer-events: none;
         }
         
         /* Main Content */
@@ -196,12 +248,24 @@
             justify-content: center;
             border-radius: 12px;
             font-size: 1.5rem;
+            flex-shrink: 0;
         }
         
-        .stat-icon.active { background: rgba(16, 185, 129, 0.2); }
-        .stat-icon.warning { background: rgba(245, 158, 11, 0.2); }
-        .stat-icon.info { background: rgba(0, 212, 255, 0.2); }
-        .stat-icon.primary { background: rgba(255, 204, 0, 0.2); }
+        .stat-icon.active {
+            background: rgba(16, 185, 129, 0.2);
+        }
+        
+        .stat-icon.warning {
+            background: rgba(245, 158, 11, 0.2);
+        }
+        
+        .stat-icon.info {
+            background: rgba(0, 212, 255, 0.2);
+        }
+        
+        .stat-icon.primary {
+            background: rgba(255, 204, 0, 0.2);
+        }
         
         .stat-content h3 {
             margin: 0;
@@ -226,28 +290,47 @@
             margin-bottom: 1.5rem;
             border-bottom: 2px solid var(--muted-border-color);
             overflow-x: auto;
+            flex-wrap: nowrap;
         }
         
         .tab {
             padding: 0.75rem 1.5rem;
             background: none;
             border: none;
+            border-radius: 0;
             border-bottom: 2px solid transparent;
+            margin: 0;
             margin-bottom: -2px;
             cursor: pointer;
             font-weight: 600;
             color: var(--muted-color);
             transition: all 0.2s;
             white-space: nowrap;
+            box-shadow: none;
+            outline: none;
+            font-size: 1rem;
+            line-height: 1.5;
         }
         
         .tab:hover {
             color: var(--color);
             background: rgba(255,255,255,0.05);
+            border-bottom-color: transparent;
+            box-shadow: none;
+        }
+        
+        .tab:focus {
+            background: rgba(255,255,255,0.05);
+            box-shadow: none;
         }
         
         .tab.active {
             color: var(--brand-primary);
+            border-bottom-color: var(--brand-primary);
+            background: none;
+        }
+        
+        .tab.active:hover {
             border-bottom-color: var(--brand-primary);
         }
         
@@ -261,8 +344,14 @@
         }
         
         @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(10px); }
-            to { opacity: 1; transform: translateY(0); }
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
         }
         
         /* Section Cards */
@@ -270,9 +359,14 @@
             background: var(--card-background-color);
             padding: 1.5rem;
             border-radius: 12px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
             border: 1px solid var(--muted-border-color);
             margin-bottom: 1.5rem;
+            transition: all 0.3s ease;
+        }
+        
+        .section-card:hover {
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
         }
         
         .section-card h2 {
@@ -282,6 +376,7 @@
             align-items: center;
             gap: 0.75rem;
             font-size: 1.25rem;
+            font-weight: 700;
         }
         
         /* Status Badges */
@@ -434,26 +529,27 @@
     </style>
 </head>
 <body>
-<body>
     <nav>
         <div class="container">
             <div class="nav-brand">
-                <svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+                <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
                     <defs>
                         <linearGradient id="brandGradient" x1="0%" y1="0%" x2="100%" y2="100%">
-                            <stop offset="0%" style="stop-color:#00d4ff"/>
-                            <stop offset="100%" style="stop-color:#0091ff"/>
+                            <stop offset="0%" style="stop-color:#17a2b8"/>
+                            <stop offset="100%" style="stop-color:#00d4ff"/>
                         </linearGradient>
                     </defs>
                     <!-- Container boxes -->
-                    <rect x="8" y="20" width="12" height="8" fill="url(#brandGradient)" rx="1"/>
-                    <rect x="22" y="20" width="12" height="8" fill="url(#brandGradient)" rx="1"/>
-                    <rect x="36" y="20" width="12" height="8" fill="url(#brandGradient)" rx="1"/>
-                    <rect x="8" y="30" width="12" height="16" fill="url(#brandGradient)" rx="1"/>
-                    <rect x="22" y="30" width="12" height="16" fill="url(#brandGradient)" rx="1"/>
-                    <rect x="36" y="30" width="12" height="16" fill="url(#brandGradient)" rx="1"/>
+                    <g>
+                        <rect x="10" y="30" width="20" height="15" fill="url(#brandGradient)" rx="2"/>
+                        <rect x="34" y="30" width="20" height="15" fill="url(#brandGradient)" rx="2"/>
+                        <rect x="58" y="30" width="20" height="15" fill="url(#brandGradient)" rx="2"/>
+                        <rect x="10" y="48" width="20" height="25" fill="url(#brandGradient)" rx="2"/>
+                        <rect x="34" y="48" width="20" height="25" fill="url(#brandGradient)" rx="2"/>
+                        <rect x="58" y="48" width="20" height="25" fill="url(#brandGradient)" rx="2"/>
+                    </g>
                     <!-- Lightning bolt -->
-                    <path d="M40 16 L52 40 L28 40 Z" fill="#ffcc00" stroke="#fff" stroke-width="1"/>
+                    <path d="M62 18 L82 63 L42 63 Z" fill="#00d4ff" stroke="#fff" stroke-width="2" stroke-linejoin="round"/>
                 </svg>
                 <h1>docker-dash</h1>
             </div>
