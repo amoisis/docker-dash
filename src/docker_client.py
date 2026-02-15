@@ -195,6 +195,9 @@ def start_event_listener():
                 action = event.get("Action")
                 if action == "start":
                     container_id = event.get("id")
+                    if not container_id:
+                        logging.warning(f"Received start event with no container ID. Event: {event}")
+                        continue
                     try:
                         logging.info(f"Received start event for container {container_id[:12]}")
                         container = docker_client.containers.get(container_id)
@@ -205,6 +208,9 @@ def start_event_listener():
                         )
                 elif action == "stop":
                     container_id = event.get("id")
+                    if not container_id:
+                        logging.warning(f"Received stop event with no container ID. Event: {event}")
+                        continue
                     # Clean up state on stop
                     if container_id in _container_ingress_state:
                         old_tunnel, old_hostname = _container_ingress_state.pop(container_id)
@@ -233,4 +239,4 @@ def start_event_listener():
         except docker.errors.APIError as e:
             logging.error(f"Docker API error during event processing: {e}")
         except Exception as e:
-            logging.error(f"An unexpected error occurred while processing an event: {e}")
+            logging.error(f"An unexpected error occurred while processing an event: {e}", exc_info=True)
