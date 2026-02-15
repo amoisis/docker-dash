@@ -661,9 +661,9 @@ def ensure_cname_record_exists(hostname: str, tunnel_name: str, manager=None):
 
     try:
         logging.debug(f"[DNS] Looking up existing records for '{hostname}' in zone '{zone_name}'")
-        records = retry_on_api_error()(
+        records = list(retry_on_api_error()(
             lambda: manager.cf_client.dns.records.list(zone_id=zone.id, name=hostname)
-        )()
+        )())
         
         logging.debug(f"[DNS] Found {len(records) if records else 0} existing record(s) for '{hostname}'")
         
