@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>docker-dash - Dashboard</title>
-    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0%25' y1='0%25' x2='100%25' y2='100%25'%3E%3Cstop offset='0%25' style='stop-color:%2317a2b8'/%3E%3Cstop offset='100%25' style='stop-color:%2300d4ff'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cg%3E%3Crect x='8' y='25' width='18' height='12' fill='url(%23g)' rx='2'/%3E%3Crect x='30' y='25' width='18' height='12' fill='url(%23g)' rx='2'/%3E%3Crect x='52' y='25' width='18' height='12' fill='url(%23g)' rx='2'/%3E%3Crect x='8' y='40' width='18' height='22' fill='url(%23g)' rx='2'/%3E%3Crect x='30' y='40' width='18' height='22' fill='url(%23g)' rx='2'/%3E%3Crect x='52' y='40' width='18' height='22' fill='url(%23g)' rx='2'/%3E%3C/g%3E%3Cpath d='M55 15 L75 55 L35 55 Z' fill='%2300d4ff' stroke='%23fff' stroke-width='1.5' stroke-linejoin='round'/%3E%3C/svg%3E">
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 210 297'%3E%3Cg%3E%3Cpath fill='%2320adb7' stroke='%23fff' stroke-width='0.265' d='m 30.092687,97.25027 v 23.68146 l 20.555989,3.44603 -0.04007,-31.054367 z'/%3E%3Cpath fill='%2320adb7' stroke='%23fff' stroke-width='0.265' d='m 50.728819,93.243253 32.937666,5.32933 0.160282,21.597817 -33.05788,4.24743 z'/%3E%3C/g%3E%3Cg%3E%3Cpath fill='%23fff' stroke='%23fff' stroke-width='0.265' d='m 31.535213,98.652723 17.630868,-3.325823 0.04007,27.16757 -17.550728,-3.00526 z'/%3E%3Cpath fill='%23fff' stroke='%23fff' stroke-width='0.265' d='m 53.774247,95.807858 1.642685,0.200656 0.04007,25.884676 -1.482415,0.20041 z'/%3E%3Cpath fill='%23fff' stroke='%23fff' stroke-width='0.258' d='m 58.745182,96.67731 1.649697,0.189654 0.04023,24.465336 -1.489086,0.19611 z'/%3E%3Cpath fill='%23fff' stroke='%23fff' stroke-width='0.233' d='m 75.506217,99.30036 1.675516,0.152075 0.04086,19.617725 -1.49361,0.28119 z'/%3E%3Cpath fill='%23fff' stroke='%23fff' stroke-width='0.226' d='m 79.855674,100.06542 1.682321,0.14292 0.04103,18.43585 -1.600258,0.27749 z'/%3E%3Cpath fill='%23fff' stroke='%23fff' stroke-width='0.252' d='m 64.593626,97.195269 1.656732,0.178958 0.04041,23.085633 -1.575915,0.0715 z'/%3E%3Cpath fill='%23fff' stroke='%23fff' stroke-width='0.240' d='m 70.696585,98.678633 1.668486,0.16185 0.04069,20.878577 -1.526992,0.24502 z'/%3E%3C/g%3E%3Cg%3E%3Cpath fill='%2320adb7' stroke='%23fff' stroke-width='0.265' d='m 33.01781,99.874864 4.367645,-0.821437 0.120211,9.696973 -1.482595,0.0401 v 1.4826 l 1.482595,0.0401 -0.04007,8.61508 -4.327575,-0.76133 z'/%3E%3Cpath fill='%2320adb7' stroke='%23fff' stroke-width='0.265' d='m 39.068401,98.853076 1.462563,-0.240421 0.02004,20.876555 -1.482598,-0.24043 z'/%3E%3Cpath fill='%2320adb7' stroke='%23fff' stroke-width='0.265' d='m 42.113734,98.211954 5.489612,-0.961684 0.08014,23.32083 -5.730031,-0.96168 v -9.45656 l 1.682945,-0.0401 v -1.36239 l -1.522666,0.0401 z'/%3E%3C/g%3E%3Cpath fill='%2320adb7' stroke='%23fff' stroke-width='0.265' d='m 52.251482,111.8358 17.71101,-26.085666 -5.008769,18.512416 11.860766,-0.0801 -18.392201,26.847 5.569752,-19.27375 z'/%3E%3C/svg%3E">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@1/css/pico.min.css">
     <style>
         :root {
@@ -532,24 +532,30 @@
     <nav>
         <div class="container">
             <div class="nav-brand">
-                <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
-                    <defs>
-                        <linearGradient id="brandGradient" x1="0%" y1="0%" x2="100%" y2="100%">
-                            <stop offset="0%" style="stop-color:#17a2b8"/>
-                            <stop offset="100%" style="stop-color:#00d4ff"/>
-                        </linearGradient>
-                    </defs>
-                    <!-- Container boxes -->
+                <svg viewBox="0 0 210 297" xmlns="http://www.w3.org/2000/svg">
+                    <!-- Container base -->
                     <g>
-                        <rect x="10" y="30" width="20" height="15" fill="url(#brandGradient)" rx="2"/>
-                        <rect x="34" y="30" width="20" height="15" fill="url(#brandGradient)" rx="2"/>
-                        <rect x="58" y="30" width="20" height="15" fill="url(#brandGradient)" rx="2"/>
-                        <rect x="10" y="48" width="20" height="25" fill="url(#brandGradient)" rx="2"/>
-                        <rect x="34" y="48" width="20" height="25" fill="url(#brandGradient)" rx="2"/>
-                        <rect x="58" y="48" width="20" height="25" fill="url(#brandGradient)" rx="2"/>
+                        <path fill="#20adb7" stroke="#fff" stroke-width="0.265" d="m 30.092687,97.25027 v 23.68146 l 20.555989,3.44603 -0.04007,-31.054367 z"/>
+                        <path fill="#20adb7" stroke="#fff" stroke-width="0.265" d="m 50.728819,93.243253 32.937666,5.32933 0.160282,21.597817 -33.05788,4.24743 z"/>
+                    </g>
+                    <!-- Container details (white lines) -->
+                    <g>
+                        <path fill="#fff" stroke="#fff" stroke-width="0.265" d="m 31.535213,98.652723 17.630868,-3.325823 0.04007,27.16757 -17.550728,-3.00526 z"/>
+                        <path fill="#fff" stroke="#fff" stroke-width="0.265" d="m 53.774247,95.807858 1.642685,0.200656 0.04007,25.884676 -1.482415,0.20041 z"/>
+                        <path fill="#fff" stroke="#fff" stroke-width="0.258" d="m 58.745182,96.67731 1.649697,0.189654 0.04023,24.465336 -1.489086,0.19611 z"/>
+                        <path fill="#fff" stroke="#fff" stroke-width="0.233" d="m 75.506217,99.30036 1.675516,0.152075 0.04086,19.617725 -1.49361,0.28119 z"/>
+                        <path fill="#fff" stroke="#fff" stroke-width="0.226" d="m 79.855674,100.06542 1.682321,0.14292 0.04103,18.43585 -1.600258,0.27749 z"/>
+                        <path fill="#fff" stroke="#fff" stroke-width="0.252" d="m 64.593626,97.195269 1.656732,0.178958 0.04041,23.085633 -1.575915,0.0715 z"/>
+                        <path fill="#fff" stroke="#fff" stroke-width="0.240" d="m 70.696585,98.678633 1.668486,0.16185 0.04069,20.878577 -1.526992,0.24502 z"/>
+                    </g>
+                    <!-- Container compartments -->
+                    <g>
+                        <path fill="#20adb7" stroke="#fff" stroke-width="0.265" d="m 33.01781,99.874864 4.367645,-0.821437 0.120211,9.696973 -1.482595,0.0401 v 1.4826 l 1.482595,0.0401 -0.04007,8.61508 -4.327575,-0.76133 z"/>
+                        <path fill="#20adb7" stroke="#fff" stroke-width="0.265" d="m 39.068401,98.853076 1.462563,-0.240421 0.02004,20.876555 -1.482598,-0.24043 z"/>
+                        <path fill="#20adb7" stroke="#fff" stroke-width="0.265" d="m 42.113734,98.211954 5.489612,-0.961684 0.08014,23.32083 -5.730031,-0.96168 v -9.45656 l 1.682945,-0.0401 v -1.36239 l -1.522666,0.0401 z"/>
                     </g>
                     <!-- Lightning bolt -->
-                    <path d="M62 18 L82 63 L42 63 Z" fill="#00d4ff" stroke="#fff" stroke-width="2" stroke-linejoin="round"/>
+                    <path fill="#20adb7" stroke="#fff" stroke-width="0.265" d="m 52.251482,111.8358 17.71101,-26.085666 -5.008769,18.512416 11.860766,-0.0801 -18.392201,26.847 5.569752,-19.27375 z"/>
                 </svg>
                 <h1>docker-dash</h1>
             </div>
