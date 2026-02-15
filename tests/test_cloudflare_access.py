@@ -52,8 +52,9 @@ class TestAccessApplicationManagement:
         # Verify create was called
         assert mock_cloudflare_client.zero_trust.access.applications.create.called
         
-        # Verify cache was updated
-        assert "app.example.com" in cloudflare_client._manager.access_apps_cache
+        # Verify cache was updated (explicit dictionary key check to avoid CodeQL warnings)
+        cache_keys = list(cloudflare_client._manager.access_apps_cache.keys())
+        assert "app.example.com" in cache_keys
     
     def test_update_existing_access_application(self, reset_cloudflare_state, mock_cloudflare_client):
         """Test updating an existing Access Application."""

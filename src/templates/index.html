@@ -547,6 +547,22 @@
                 element.innerText = text;
                 return element.innerHTML;
             }
+            
+            // Safe URL display - ensures URLs are properly sanitized for display
+            function sanitizeUrl(url) {
+                if (!url || typeof url !== 'string') {
+                    return 'N/A';
+                }
+                
+                // Remove any javascript: or data: protocols
+                const dangerous = /^(javascript|data|vbscript|file|about):/i;
+                if (dangerous.test(url.trim())) {
+                    return '[Blocked: Unsafe URL]';
+                }
+                
+                // Sanitize for display (escape HTML)
+                return sanitize(url);
+            }
 
             // Recursively sanitize data
             function sanitizeData(data) {
@@ -560,7 +576,12 @@
                     const sanitizedObject = {};
                     for (const key in data) {
                         if (Object.prototype.hasOwnProperty.call(data, key)) {
-                            sanitizedObject[key] = sanitizeData(data[key]);
+                            // Special handling for URL fields
+                            if (key.includes('url') || key.includes('redirect')) {
+                                sanitizedObject[key] = sanitizeUrl(data[key]);
+                            } else {
+                                sanitizedObject[key] = sanitizeData(data[key]);
+                            }
                         }
                     }
                     return sanitizedObject;
