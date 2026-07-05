@@ -105,3 +105,20 @@ class TestCacheRefresh:
         
         # Verify stop flag was set
         assert cloudflare_client._manager.stop_refresh is True
+
+    def test_initialize_and_log_tunnels_sets_last_cache_refresh(
+        self, reset_cloudflare_state, mock_cloudflare_client, monkeypatch
+    ):
+        """Test that initial cache population updates cache health timestamp."""
+        cloudflare_client._manager.last_cache_refresh = None
+        monkeypatch.setattr(
+            cloudflare_client, 'get_cloudflare_client',
+            lambda manager=None: (mock_cloudflare_client, "test-account")
+        )
+
+        cloudflare_client.initialize_and_log_tunnels()
+
+        assert cloudflare_client._manager.last_cache_refresh is not None
+        health = cloudflare_client.get_cache_health()
+        assert health["status"] == "ok"
+        assert health["last_refresh"] is not None

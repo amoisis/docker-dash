@@ -139,6 +139,7 @@ def reset_cloudflare_state():
     original_zones = cloudflare_client._manager.zones_cache.copy()
     original_client = cloudflare_client._manager.cf_client
     original_account = cloudflare_client._manager.account_id
+    original_last_refresh = cloudflare_client._manager.last_cache_refresh
     
     # Clear state before test
     cloudflare_client._manager.tunnel_cache.clear()
@@ -148,6 +149,7 @@ def reset_cloudflare_state():
     cloudflare_client._manager.zones_cache.clear()
     cloudflare_client._manager.cf_client = None
     cloudflare_client._manager.account_id = None
+    cloudflare_client._manager.last_cache_refresh = None
     
     yield
     
@@ -159,3 +161,4 @@ def reset_cloudflare_state():
     cloudflare_client._manager.zones_cache = original_zones
     cloudflare_client._manager.cf_client = original_client
     cloudflare_client._manager.account_id = original_account
+    cloudflare_client._manager.last_cache_refresh = original_last_refresh

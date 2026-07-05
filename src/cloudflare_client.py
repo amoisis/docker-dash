@@ -527,6 +527,7 @@ def initialize_and_log_tunnels(manager=None):
         populate_tunnel_cache(cf_client, cf_account_id, manager)
         populate_access_caches(cf_client, cf_account_id, manager)
         populate_zones_cache(cf_client, manager)
+        manager.last_cache_refresh = datetime.now()
     except Exception as e:
         logging.critical(f"Critical error during initial cache population: {e}")
         logging.critical("Application may not function correctly. Please check Cloudflare credentials and API access.")

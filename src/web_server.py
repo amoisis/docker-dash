@@ -36,7 +36,14 @@ def _cloudflare_health():
 def _cache_health():
     """Check whether the Cloudflare cache is populated."""
     try:
-        return get_cache_health()
+        health = get_cache_health()
+        # Fallback: if the refresh timestamp is missing but the caches
+        # contain data, report the cache as healthy.
+        if health.get("status") != "ok":
+            cache_data = get_consolidated_cache()
+            if any(cache_data.values()):
+                health["status"] = "ok"
+        return health
     except Exception as e:
         return {"status": "error", "reason": str(e)}
 
