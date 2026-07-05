@@ -56,8 +56,8 @@
         }
         
         .nav-brand svg {
-            width: 40px;
-            height: 40px;
+            width: 120px;
+            height: 120px;
         }
         
         .nav-brand h1 {
@@ -80,14 +80,67 @@
             font-size: 0.875rem;
             font-weight: 600;
             color: var(--status-active);
+            cursor: pointer;
+            border: 1px solid transparent;
+            transition: all 0.2s ease;
+            user-select: none;
         }
-        
+
+        .system-status:hover {
+            background: rgba(16, 185, 129, 0.2);
+            border-color: var(--status-active);
+            transform: translateY(-1px);
+        }
+
+        .system-status.degraded {
+            background: rgba(245, 158, 11, 0.1);
+            color: var(--status-warning);
+        }
+
+        .system-status.degraded:hover {
+            background: rgba(245, 158, 11, 0.2);
+            border-color: var(--status-warning);
+        }
+
+        .system-status.error {
+            background: rgba(239, 68, 68, 0.1);
+            color: var(--status-error);
+        }
+
+        .system-status.error:hover {
+            background: rgba(239, 68, 68, 0.2);
+            border-color: var(--status-error);
+        }
+
+        .system-status.unknown {
+            background: rgba(107, 114, 128, 0.1);
+            color: var(--status-disabled);
+        }
+
+        .system-status.unknown:hover {
+            background: rgba(107, 114, 128, 0.2);
+            border-color: var(--status-disabled);
+        }
+
         .status-dot {
             width: 8px;
             height: 8px;
             border-radius: 50%;
             background: var(--status-active);
             animation: pulse 2s infinite;
+        }
+
+        .system-status.degraded .status-dot {
+            background: var(--status-warning);
+        }
+
+        .system-status.error .status-dot {
+            background: var(--status-error);
+        }
+
+        .system-status.unknown .status-dot {
+            background: var(--status-disabled);
+            animation: none;
         }
         
         @keyframes pulse {
@@ -506,24 +559,193 @@
             transition: width 1s linear;
         }
         
+        /* Health Modal */
+        .modal-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.6);
+            backdrop-filter: blur(4px);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 2000;
+            padding: 1rem;
+        }
+
+        .modal-overlay.active {
+            display: flex;
+        }
+
+        .modal {
+            background: var(--card-background-color);
+            border: 1px solid var(--muted-border-color);
+            border-radius: 16px;
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3);
+            width: 100%;
+            max-width: 560px;
+            max-height: 90vh;
+            overflow: hidden;
+            animation: modalIn 0.25s ease;
+        }
+
+        @keyframes modalIn {
+            from {
+                opacity: 0;
+                transform: translateY(-20px) scale(0.98);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0) scale(1);
+            }
+        }
+
+        .modal-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 1.25rem 1.5rem;
+            border-bottom: 1px solid var(--muted-border-color);
+        }
+
+        .modal-header h2 {
+            margin: 0;
+            font-size: 1.25rem;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .modal-close {
+            background: none;
+            border: none;
+            color: var(--muted-color);
+            font-size: 1.5rem;
+            line-height: 1;
+            cursor: pointer;
+            padding: 0.25rem;
+            border-radius: 8px;
+            min-height: auto;
+        }
+
+        .modal-close:hover {
+            color: var(--color);
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        .modal-body {
+            padding: 1.5rem;
+            overflow-y: auto;
+            max-height: 60vh;
+        }
+
+        .health-item {
+            display: flex;
+            align-items: flex-start;
+            gap: 1rem;
+            padding: 1rem;
+            background: rgba(255, 255, 255, 0.03);
+            border: 1px solid var(--muted-border-color);
+            border-radius: 12px;
+            margin-bottom: 1rem;
+        }
+
+        .health-item:last-child {
+            margin-bottom: 0;
+        }
+
+        .health-icon {
+            width: 40px;
+            height: 40px;
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.25rem;
+            flex-shrink: 0;
+        }
+
+        .health-icon.ok {
+            background: rgba(16, 185, 129, 0.15);
+        }
+
+        .health-icon.warning {
+            background: rgba(245, 158, 11, 0.15);
+        }
+
+        .health-icon.error {
+            background: rgba(239, 68, 68, 0.15);
+        }
+
+        .health-icon.unknown {
+            background: rgba(107, 114, 128, 0.15);
+        }
+
+        .health-content {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .health-content h4 {
+            margin: 0 0 0.25rem 0;
+            font-size: 1rem;
+        }
+
+        .health-content p {
+            margin: 0;
+            color: var(--muted-color);
+            font-size: 0.875rem;
+            word-break: break-word;
+        }
+
+        .health-meta {
+            display: flex;
+            gap: 1rem;
+            margin-top: 0.5rem;
+            font-size: 0.75rem;
+            color: var(--muted-color);
+        }
+
+        .health-meta span {
+            display: flex;
+            align-items: center;
+            gap: 0.25rem;
+        }
+
+        .modal-footer {
+            padding: 1rem 1.5rem;
+            border-top: 1px solid var(--muted-border-color);
+            display: flex;
+            justify-content: flex-end;
+            gap: 0.75rem;
+        }
+
         /* Responsive */
         @media (max-width: 768px) {
             nav .container {
                 flex-direction: column;
                 gap: 1rem;
             }
-            
+
             .nav-search {
                 width: 100%;
                 max-width: none;
             }
-            
+
             .stats-grid {
                 grid-template-columns: 1fr;
             }
-            
+
             .tabs {
                 flex-wrap: wrap;
+            }
+
+            .modal {
+                max-width: 100%;
+                max-height: 95vh;
+            }
+
+            .modal-body {
+                max-height: 70vh;
             }
         }
     </style>
@@ -532,7 +754,7 @@
     <nav>
         <div class="container">
             <div class="nav-brand">
-                <svg viewBox="0 0 210 297" xmlns="http://www.w3.org/2000/svg">
+                <svg viewBox="20 80 120 140" xmlns="http://www.w3.org/2000/svg">
                     <!-- Container base -->
                     <g>
                         <path fill="#20adb7" stroke="#fff" stroke-width="0.265" d="m 30.092687,97.25027 v 23.68146 l 20.555989,3.44603 -0.04007,-31.054367 z"/>
@@ -560,9 +782,9 @@
                 <h1>docker-dash</h1>
             </div>
             
-            <div class="system-status">
-                <span class="status-dot"></span>
-                <span>System Status: Healthy</span>
+            <div class="system-status" id="system-status" role="button" tabindex="0" aria-label="View system health details">
+                <span class="status-dot" id="status-dot"></span>
+                <span id="status-text">System Status: Healthy</span>
             </div>
             
             <div class="nav-search">
@@ -585,7 +807,7 @@
     <main>
         <div class="container">
             <div id="stats-overview"></div>
-            
+
             <div class="tabs">
                 <button class="tab active" data-tab="container-status">📦 Container Status</button>
                 <button class="tab" data-tab="tunnels">🔌 Tunnels</button>
@@ -597,6 +819,23 @@
             <div class="tab-content" id="tab-access"></div>
         </div>
     </main>
+
+    <!-- Health Details Modal -->
+    <div class="modal-overlay" id="health-modal-overlay" aria-hidden="true">
+        <div class="modal" role="dialog" aria-modal="true" aria-labelledby="health-modal-title">
+            <div class="modal-header">
+                <h2 id="health-modal-title">🏥 System Health</h2>
+                <button class="modal-close" id="health-modal-close" aria-label="Close health details">&times;</button>
+            </div>
+            <div class="modal-body" id="health-modal-body">
+                <p class="empty-state">Loading health status...</p>
+            </div>
+            <div class="modal-footer">
+                <button id="health-refresh" class="secondary">🔄 Refresh</button>
+                <button id="health-close" class="primary">Close</button>
+            </div>
+        </div>
+    </div>
 
     <script>
         document.addEventListener("DOMContentLoaded", function() {
@@ -755,6 +994,10 @@
                 }, 100);
             }
 
+            // Track consecutive fetch failures to avoid spamming a dead backend
+            let consecutiveFailures = 0;
+            const MAX_CONSECUTIVE_FAILURES = 5;
+
             // Function to fetch and render cache data
             function fetchAndRenderCache() {
                 // Show loading state on refresh button
@@ -767,6 +1010,7 @@
                     fetch('/api/containers').then(r => r.json())
                 ])
                     .then(([cacheData, containerData]) => {
+                        consecutiveFailures = 0;
                         const data = sanitizeData(cacheData);
                         const containers = sanitizeData(containerData);
                         
@@ -983,12 +1227,19 @@
                         startProgressBar();
                     })
                     .catch(error => {
+                        consecutiveFailures++;
                         const sanitizedError = sanitize(error.toString());
                         const errorHtml = '<div class="section-card"><p role="alert">❌ Error loading dashboard data: ' + sanitizedError + '</p></div>';
                         tabContainerStatus.innerHTML = errorHtml;
                         tabTunnels.innerHTML = errorHtml;
                         tabAccess.innerHTML = errorHtml;
                         lastUpdatedEl.textContent = 'Update failed';
+                        
+                        if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES && refreshInterval) {
+                            console.warn('Too many consecutive failures; stopping auto-refresh.');
+                            clearInterval(refreshInterval);
+                            refreshInterval = null;
+                        }
                     })
                     .finally(() => {
                         // Remove loading state from refresh button
@@ -1016,7 +1267,201 @@
             // 5. Initial fetch and start auto-refresh
             fetchAndRenderCache();
             startAutoRefresh();
-            
+
+            // Health status indicator and modal
+            const systemStatus = document.getElementById('system-status');
+            const statusText = document.getElementById('status-text');
+            const statusDot = document.getElementById('status-dot');
+            const healthModalOverlay = document.getElementById('health-modal-overlay');
+            const healthModalBody = document.getElementById('health-modal-body');
+            const healthModalClose = document.getElementById('health-modal-close');
+            const healthClose = document.getElementById('health-close');
+            const healthRefresh = document.getElementById('health-refresh');
+
+            const HEALTH_REFRESH_INTERVAL = 30000;
+            let healthInterval = null;
+
+            function statusClassFor(state) {
+                if (state === 'ok' || state === 'healthy' || state === 'active') return 'ok';
+                if (state === 'error' || state === 'down' || state === 'unhealthy') return 'error';
+                if (state === 'degraded' || state === 'warning') return 'warning';
+                return 'unknown';
+            }
+
+            function statusIconFor(state) {
+                const cls = statusClassFor(state);
+                if (cls === 'ok') return '✅';
+                if (cls === 'error') return '❌';
+                if (cls === 'warning') return '⚠️';
+                return '❓';
+            }
+
+            function statusLabelFor(state) {
+                const cls = statusClassFor(state);
+                if (cls === 'ok') return 'Healthy';
+                if (cls === 'error') return 'Unhealthy';
+                if (cls === 'warning') return 'Degraded';
+                return 'Unknown';
+            }
+
+            function formatTimestamp(isoString) {
+                if (!isoString) return 'Never';
+                try {
+                    const date = new Date(isoString);
+                    return date.toLocaleString();
+                } catch (e) {
+                    return isoString;
+                }
+            }
+
+            function renderHealthItem(title, state, details, meta) {
+                const cls = statusClassFor(state);
+                const icon = statusIconFor(state);
+                let metaHtml = '';
+                if (meta && meta.length > 0) {
+                    metaHtml = '<div class="health-meta">' +
+                        meta.map(m => `<span>${m}</span>`).join('') +
+                        '</div>';
+                }
+                return `
+                    <div class="health-item">
+                        <div class="health-icon ${cls}">${icon}</div>
+                        <div class="health-content">
+                            <h4>${sanitize(title)} <span class="badge badge-${cls === 'ok' ? 'active' : cls === 'warning' ? 'warning' : cls === 'error' ? 'error' : 'disabled'}">${sanitize(state || 'unknown')}</span></h4>
+                            <p>${sanitize(details)}</p>
+                            ${metaHtml}
+                        </div>
+                    </div>
+                `;
+            }
+
+            function updateSystemStatusIndicator(health) {
+                const overall = health && health.status ? health.status : 'unknown';
+                const cls = statusClassFor(overall);
+                systemStatus.classList.remove('degraded', 'error', 'unknown');
+                if (cls === 'warning') systemStatus.classList.add('degraded');
+                else if (cls === 'error') systemStatus.classList.add('error');
+                else if (cls === 'unknown') systemStatus.classList.add('unknown');
+                statusText.textContent = 'System Status: ' + statusLabelFor(overall);
+            }
+
+            function renderHealthModal(health) {
+                if (!health) {
+                    healthModalBody.innerHTML = '<div class="section-card"><p role="alert">❌ Failed to load health status.</p></div>';
+                    return;
+                }
+
+                const docker = health.docker || {};
+                const cloudflare = health.cloudflare || {};
+                const cache = health.cache || {};
+                const events = health.event_listener || {};
+
+                const dockerMeta = [];
+                if (docker.connected !== undefined) {
+                    dockerMeta.push(docker.connected ? '✓ Connected' : '✗ Not connected');
+                }
+
+                const cloudflareMeta = [];
+                if (cloudflare.initialized !== undefined) {
+                    cloudflareMeta.push(cloudflare.initialized ? '✓ Initialized' : '✗ Not initialized');
+                }
+
+                const cacheMeta = [];
+                if (cache.last_refresh) cacheMeta.push('🕒 ' + formatTimestamp(cache.last_refresh));
+                if (cache.tunnel_count !== undefined) cacheMeta.push('🔌 ' + cache.tunnel_count + ' tunnels');
+                if (cache.access_app_count !== undefined) cacheMeta.push('🔐 ' + cache.access_app_count + ' apps');
+                if (cache.policy_count !== undefined) cacheMeta.push('📋 ' + cache.policy_count + ' policies');
+                if (cache.idp_count !== undefined) cacheMeta.push('🔑 ' + cache.idp_count + ' IDPs');
+                if (cache.zone_count !== undefined) cacheMeta.push('🌐 ' + cache.zone_count + ' zones');
+
+                const eventMeta = [];
+                if (events.connected !== undefined) {
+                    eventMeta.push(events.connected ? '✓ Listening' : '✗ Not listening');
+                }
+
+                const dockerReason = docker.reason ? docker.reason : (docker.status === 'ok' ? 'Docker daemon is reachable' : 'Unable to reach Docker daemon');
+                const cloudflareReason = cloudflare.reason ? cloudflare.reason : (cloudflare.status === 'ok' ? 'Cloudflare client is initialized' : 'Cloudflare client not initialized');
+                const cacheReason = cache.reason ? cache.reason : (cache.status === 'ok' ? 'Cloudflare cache is populated' : 'Cloudflare cache has not been refreshed');
+                const eventReason = events.reason ? events.reason : (events.status === 'ok' ? 'Docker event listener is running' : 'Docker event listener status unknown');
+
+                healthModalBody.innerHTML = `
+                    ${renderHealthItem('Docker Daemon', docker.status, dockerReason, dockerMeta)}
+                    ${renderHealthItem('Cloudflare API', cloudflare.status, cloudflareReason, cloudflareMeta)}
+                    ${renderHealthItem('Cloudflare Cache', cache.status, cacheReason, cacheMeta)}
+                    ${renderHealthItem('Docker Event Listener', events.status, eventReason, eventMeta)}
+                    <p style="text-align: center; color: var(--muted-color); font-size: 0.75rem; margin-top: 1rem;">
+                        Last checked: ${formatTimestamp(health.timestamp)}
+                    </p>
+                `;
+            }
+
+            function fetchHealthStatus() {
+                return fetch('/health')
+                    .then(r => {
+                        if (!r.ok) throw new Error('HTTP ' + r.status);
+                        return r.json();
+                    })
+                    .then(health => {
+                        const data = sanitizeData(health);
+                        updateSystemStatusIndicator(data);
+                        // If modal is open, refresh its content
+                        if (healthModalOverlay.classList.contains('active')) {
+                            renderHealthModal(data);
+                        }
+                        return data;
+                    })
+                    .catch(error => {
+                        console.error('Health check failed:', error);
+                        updateSystemStatusIndicator({ status: 'error' });
+                        if (healthModalOverlay.classList.contains('active')) {
+                            renderHealthModal(null);
+                        }
+                    });
+            }
+
+            function openHealthModal() {
+                healthModalOverlay.classList.add('active');
+                healthModalOverlay.setAttribute('aria-hidden', 'false');
+                healthModalBody.innerHTML = '<p class="empty-state">Loading health status...</p>';
+                fetchHealthStatus().then(renderHealthModal);
+            }
+
+            function closeHealthModal() {
+                healthModalOverlay.classList.remove('active');
+                healthModalOverlay.setAttribute('aria-hidden', 'true');
+            }
+
+            systemStatus.addEventListener('click', openHealthModal);
+            systemStatus.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    openHealthModal();
+                }
+            });
+            healthModalClose.addEventListener('click', closeHealthModal);
+            healthClose.addEventListener('click', closeHealthModal);
+            healthRefresh.addEventListener('click', () => {
+                healthModalBody.innerHTML = '<p class="empty-state">Loading health status...</p>';
+                fetchHealthStatus().then(renderHealthModal);
+            });
+            healthModalOverlay.addEventListener('click', (e) => {
+                if (e.target === healthModalOverlay) closeHealthModal();
+            });
+            document.addEventListener('keydown', (e) => {
+                if (e.key === 'Escape' && healthModalOverlay.classList.contains('active')) {
+                    closeHealthModal();
+                }
+            });
+
+            // Initial health check and periodic refresh
+            function startHealthRefresh() {
+                if (healthInterval) clearInterval(healthInterval);
+                healthInterval = setInterval(fetchHealthStatus, HEALTH_REFRESH_INTERVAL);
+            }
+
+            fetchHealthStatus();
+            startHealthRefresh();
+
             // 6. Stop auto-refresh when tab is not visible to save resources
             document.addEventListener('visibilitychange', () => {
                 if (document.hidden) {
@@ -1028,10 +1473,16 @@
                         clearInterval(progressInterval);
                         progressInterval = null;
                     }
+                    if (healthInterval) {
+                        clearInterval(healthInterval);
+                        healthInterval = null;
+                    }
                 } else {
                     // Resume auto-refresh and do an immediate refresh when tab becomes visible
                     fetchAndRenderCache();
                     startAutoRefresh();
+                    fetchHealthStatus();
+                    startHealthRefresh();
                 }
             });
         });

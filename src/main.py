@@ -36,7 +36,14 @@ def main():
     start_server(web_port)
     
     # Start the main, long-running process
-    start_event_listener()
+    try:
+        start_event_listener()
+    except Exception as e:
+        logging.critical(f"Unhandled exception in event listener: {e}", exc_info=True)
+        shutdown_requested = True
+        stop_cache_refresh_thread()
+        stop_event_listener()
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()

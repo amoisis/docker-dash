@@ -101,6 +101,7 @@ class TestServiceUrlValidation:
             "https://api.internal.local",
             "http://service",
             "http://my-service:8080/path",
+            "http://my_service:8080",
             "http_status:404",
             "http_status:200",
             "http_status:500",

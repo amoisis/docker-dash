@@ -85,6 +85,7 @@ class TestCacheRefresh:
         cloudflare_client._manager.account_id = "test-account"
         cloudflare_client._manager.cache_refresh_interval = 10
         cloudflare_client._manager.stop_refresh = False
+        cloudflare_client._manager._stop_refresh_event.clear()
         
         # Mock refresh to do nothing
         monkeypatch.setattr(cloudflare_client, 'refresh_all_caches', lambda manager=None: None)

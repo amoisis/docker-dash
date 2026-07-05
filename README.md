@@ -77,6 +77,7 @@ services:
 | `CF_ACCOUNT_ID` | **Yes** | Your Cloudflare Account ID. |
 | `LOG_LEVEL` | **No** | Logging level. Defaults to `INFO`. |
 | `CACHE_REFRESH_INTERVAL` | **No** | How often (in seconds) to refresh the Cloudflare cache. Defaults to `300` (5 minutes). |
+| `RECONCILE_INTERVAL` | **No** | How often (in seconds) to reconcile local state with running containers. Set to `0` to disable. Defaults to `60`. |
 | `MANAGE_DNS_RECORDS` | **No** | Set to `false` to disable automatic DNS record creation/updates. Defaults to `true`. |
 | `DNS_HA_MODE` | **No** | Set to `true` to enable High Availability mode. When enabled, if a DNS record points to a different tunnel, it won't be updated (allows multiple tunnels to serve the same hostname). Defaults to `false`. |
 
