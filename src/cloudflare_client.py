@@ -761,6 +761,7 @@ def ensure_cname_record_exists(hostname: str, tunnel_name: str, manager=None):
                             type="CNAME",
                             name=hostname,
                             content=tunnel_cname,
+                            ttl=1,
                             proxied=True
                         )
                     )()
@@ -775,6 +776,7 @@ def ensure_cname_record_exists(hostname: str, tunnel_name: str, manager=None):
                 type="CNAME",
                 name=hostname,
                 content=tunnel_cname,
+                ttl=1,
                 proxied=True
             )
         )()

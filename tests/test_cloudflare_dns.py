@@ -35,10 +35,12 @@ class TestDNSZoneDetection:
         # Execute
         cloudflare_client.ensure_cname_record_exists("app.example.com", "test-tunnel")
         
-        # Verify CNAME was created with correct zone
+        # Verify CNAME was created with correct zone and TTL
         assert mock_cloudflare_client.dns.records.create.called
         call_kwargs = mock_cloudflare_client.dns.records.create.call_args[1]
         assert call_kwargs['zone_id'] == "zone-123"
+        assert call_kwargs['ttl'] == 1
+        assert call_kwargs['proxied'] is True
     
     def test_multi_part_tld_zone_detection(self, reset_cloudflare_state, mock_cloudflare_client):
         """Test zone detection for multi-part TLD (.co.uk, .com.au)."""
