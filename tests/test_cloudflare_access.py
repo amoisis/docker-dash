@@ -171,6 +171,29 @@ class TestAccessApplicationManagement:
         # Verify no API calls were made
         assert not mock_cloudflare_client.zero_trust.access.applications.create.called
     
+    def test_update_existing_access_application_with_missing_policy_clears_stale_policies(self, reset_cloudflare_state, mock_cloudflare_client):
+        """Test an existing Access Application is updated to clear stale policies when the configured policy no longer exists."""
+        cloudflare_client._manager.cf_client = mock_cloudflare_client
+        cloudflare_client._manager.account_id = "test-account"
+        cloudflare_client._manager.access_policies_cache = {}
+
+        existing_app = Mock()
+        existing_app.id = "app-existing"
+        existing_app.domain = "app.example.com"
+        cloudflare_client._manager.access_apps_cache = {"app.example.com": existing_app}
+
+        updated_app = Mock()
+        updated_app.id = "app-existing"
+        updated_app.domain = "app.example.com"
+        mock_cloudflare_client.zero_trust.access.applications.update.return_value = updated_app
+
+        cloudflare_client.add_or_update_access_application("app.example.com", {"policy": "Deleted-Policy"})
+
+        assert mock_cloudflare_client.zero_trust.access.applications.update.called
+        assert not mock_cloudflare_client.zero_trust.access.applications.create.called
+        call_kwargs = mock_cloudflare_client.zero_trust.access.applications.update.call_args[1]
+        assert call_kwargs.get("policies") == []
+
     def test_remove_access_application(self, reset_cloudflare_state, mock_cloudflare_client):
         """Test removing an Access Application."""
         # Setup

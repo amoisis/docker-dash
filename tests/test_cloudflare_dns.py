@@ -208,3 +208,29 @@ class TestDNSRecordManagement:
         
         # Verify delete was NOT called
         assert not mock_cloudflare_client.dns.records.delete.called
+
+    def test_remove_dns_records_from_iterable_without_len(self, reset_cloudflare_state, mock_cloudflare_client):
+        """Test removal when the SDK returns an iterable pagination object without __len__."""
+        cloudflare_client._manager.cf_client = mock_cloudflare_client
+
+        zone = Mock()
+        zone.id = "zone-123"
+        zone.name = "example.com"
+        cloudflare_client._manager.zones_cache = {"example.com": zone}
+
+        record1 = Mock()
+        record1.id = "dns-1"
+        record2 = Mock()
+        record2.id = "dns-2"
+
+        class IterableWithoutLen:
+            def __iter__(self):
+                yield record1
+                yield record2
+
+        mock_cloudflare_client.dns.records.list.return_value = IterableWithoutLen()
+        mock_cloudflare_client.dns.records.delete.return_value = Mock()
+
+        cloudflare_client.remove_cname_record("app.example.com")
+
+        assert mock_cloudflare_client.dns.records.delete.call_count == 2

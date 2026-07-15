@@ -108,6 +108,20 @@ def retry_on_api_error(max_retries=3, initial_delay=1, backoff_factor=2):
     return decorator
 
 
+def _normalize_dns_records(records):
+    """Convert Cloudflare DNS list responses into a concrete list for iteration and counting."""
+    if records is None:
+        return []
+    if isinstance(records, (list, tuple)):
+        return list(records)
+    if isinstance(records, dict):
+        return [records]
+    try:
+        return list(records)
+    except TypeError:
+        return [records]
+
+
 # ===========================
 # Input Validation Functions
 # ===========================
@@ -726,7 +740,7 @@ def ensure_cname_record_exists(hostname: str, tunnel_name: str, manager=None):
 
     try:
         logging.debug(f"[DNS] Looking up existing records for '{hostname}' in zone '{zone_name}'")
-        records = list(retry_on_api_error()(
+        records = _normalize_dns_records(retry_on_api_error()(
             lambda: manager.cf_client.dns.records.list(zone_id=zone.id, name=hostname)
         )())
         
@@ -830,9 +844,9 @@ def remove_cname_record(hostname: str, manager=None):
 
     try:
         # Find all DNS records for this hostname
-        records = retry_on_api_error()(
+        records = _normalize_dns_records(retry_on_api_error()(
             lambda: manager.cf_client.dns.records.list(zone_id=zone.id, name=hostname)
-        )()
+        )())
         if not records:
             logging.info(f"CNAME record for '{hostname}' not found. No action needed.")
             return
@@ -882,13 +896,11 @@ def add_or_update_access_application(hostname: str, access_config: dict, manager
             if name in manager.access_policies_cache:
                 policy_uuids.append(manager.access_policies_cache[name].id)
             else:
-                logging.error(f"Access Policy '{name}' not found in cache. Cannot apply to application '{hostname}'.")
+                logging.warning(f"Access Policy '{name}' not found in cache for application '{hostname}'.")
                 logging.debug(f"Available policies in cache: {list(manager.access_policies_cache.keys())}")
-                return
 
         if not policy_uuids:
-            logging.warning(f"No valid Access Policies found for application '{hostname}'. Skipping Access setup.")
-            return
+            logging.warning(f"No valid Access Policies found for application '{hostname}'.")
 
         # 2. Translate IdP names to UUIDs
         idp_names = [idp.strip() for idp in access_config.get("loginmethods", "").split(',') if idp.strip()]
@@ -940,7 +952,7 @@ def add_or_update_access_application(hostname: str, access_config: dict, manager
             logging.info(f"Successfully updated Access Application for '{hostname}'.")
         except cloudflare.APIError as e:
             logging.error(f"Failed to update Access Application for '{hostname}': {e}")
-    else:
+    elif policy_uuids:
         try:
             payload["policies"] = [{"id": uid, "precedence": i + 1} for i, uid in enumerate(policy_uuids)]
             logging.info(f"Creating new Access Application for '{hostname}'...")
@@ -955,6 +967,8 @@ def add_or_update_access_application(hostname: str, access_config: dict, manager
             logging.info(f"Successfully created Access Application for '{hostname}'.")
         except cloudflare.APIError as e:
             logging.error(f"Failed to create Access Application for '{hostname}': {e}")
+    else:
+        logging.info(f"Skipping Access Application creation for '{hostname}' because no valid policies are available.")
 
 def remove_ingress_rule(tunnel_name: str, hostname: str, manager=None):
     """
