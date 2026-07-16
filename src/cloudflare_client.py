@@ -3,9 +3,10 @@ import logging
 import cloudflare
 import json
 import re
+import sqlite3
 import time
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from pprint import pformat
 from functools import wraps
 
@@ -40,6 +41,380 @@ class CloudflareManager:
 
 # Global manager instance for backward compatibility
 _manager = CloudflareManager()
+
+_warp_state_db = None
+_warp_state_db_lock = threading.Lock()
+_container_state_db = None
+_container_state_db_lock = threading.Lock()
+
+WARP_MANAGED_DESCRIPTION = "managed-by-docker-dash"
+_UUID_LIKE_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+
+
+class WarpStateDB:
+    """SQLite-backed storage for docker-dash-managed Warp split tunnel entries."""
+
+    def __init__(self, db_path=None):
+        self.db_path = db_path or os.environ.get("WARP_STATE_DB", "/tmp/docker-dash-warp-state.db")
+        self._lock = threading.RLock()
+        self._initialize_schema()
+
+    def _connect(self):
+        return sqlite3.connect(self.db_path)
+
+    def _initialize_schema(self):
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS warp_routes (
+                    container_id TEXT NOT NULL,
+                    profile_id TEXT NOT NULL,
+                    hostname TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (container_id, profile_id, hostname)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_warp_profile_id
+                ON warp_routes(profile_id)
+                """
+            )
+
+    def upsert_route(self, container_id, profile_id, hostname):
+        now = datetime.now(timezone.utc).isoformat()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO warp_routes (container_id, profile_id, hostname, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(container_id, profile_id, hostname)
+                DO UPDATE SET updated_at = excluded.updated_at
+                """,
+                (container_id, profile_id, hostname, now),
+            )
+
+    def remove_route(self, container_id, profile_id, hostname):
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                DELETE FROM warp_routes
+                WHERE container_id = ? AND profile_id = ? AND hostname = ?
+                """,
+                (container_id, profile_id, hostname),
+            )
+
+    def get_routes_for_container(self, container_id):
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT profile_id, hostname
+                FROM warp_routes
+                WHERE container_id = ?
+                """,
+                (container_id,),
+            ).fetchall()
+        return [(row[0], row[1]) for row in rows]
+
+    def get_hostnames_for_profile(self, profile_id):
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT hostname
+                FROM warp_routes
+                WHERE profile_id = ?
+                ORDER BY hostname ASC
+                """,
+                (profile_id,),
+            ).fetchall()
+        return [row[0] for row in rows]
+
+    def delete_routes_for_container(self, container_id):
+        routes = self.get_routes_for_container(container_id)
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                DELETE FROM warp_routes
+                WHERE container_id = ?
+                """,
+                (container_id,),
+            )
+        return routes
+
+
+class ContainerStateDB:
+    """SQLite-backed storage for docker-dash-managed tunnel and Access ownership."""
+
+    def __init__(self, db_path=None):
+        self.db_path = db_path or os.environ.get(
+            "DOCKER_DASH_STATE_DB",
+            os.environ.get("WARP_STATE_DB", "/tmp/docker-dash-state.db"),
+        )
+        self._lock = threading.RLock()
+        self._initialize_schema()
+
+    def _connect(self):
+        return sqlite3.connect(self.db_path)
+
+    def _initialize_schema(self):
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS managed_container_routes (
+                    container_id TEXT PRIMARY KEY,
+                    tunnel_name TEXT NOT NULL,
+                    hostname TEXT NOT NULL,
+                    service TEXT,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_managed_container_hostname
+                ON managed_container_routes(hostname)
+                """
+            )
+
+    def upsert_container_route(self, container_id, tunnel_name, hostname, service=None):
+        now = datetime.now(timezone.utc).isoformat()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO managed_container_routes (container_id, tunnel_name, hostname, service, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(container_id)
+                DO UPDATE SET
+                    tunnel_name = excluded.tunnel_name,
+                    hostname = excluded.hostname,
+                    service = excluded.service,
+                    updated_at = excluded.updated_at
+                """,
+                (container_id, tunnel_name, hostname, service, now),
+            )
+
+    def get_container_route(self, container_id):
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT tunnel_name, hostname, service, updated_at
+                FROM managed_container_routes
+                WHERE container_id = ?
+                """,
+                (container_id,),
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "container_id": container_id,
+            "tunnel_name": row[0],
+            "hostname": row[1],
+            "service": row[2],
+            "updated_at": row[3],
+        }
+
+    def delete_container_route(self, container_id):
+        managed_route = self.get_container_route(container_id)
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                DELETE FROM managed_container_routes
+                WHERE container_id = ?
+                """,
+                (container_id,),
+            )
+        return managed_route
+
+    def list_container_routes(self):
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT container_id, tunnel_name, hostname, service, updated_at
+                FROM managed_container_routes
+                ORDER BY updated_at ASC
+                """
+            ).fetchall()
+        return [
+            {
+                "container_id": row[0],
+                "tunnel_name": row[1],
+                "hostname": row[2],
+                "service": row[3],
+                "updated_at": row[4],
+            }
+            for row in rows
+        ]
+
+
+def get_warp_state_db():
+    global _warp_state_db
+    if _warp_state_db is None:
+        with _warp_state_db_lock:
+            if _warp_state_db is None:
+                _warp_state_db = WarpStateDB()
+    return _warp_state_db
+
+
+def get_container_state_db():
+    global _container_state_db
+    if _container_state_db is None:
+        with _container_state_db_lock:
+            if _container_state_db is None:
+                _container_state_db = ContainerStateDB()
+    return _container_state_db
+
+
+def _normalize_split_tunnel_entry(entry):
+    if hasattr(entry, "dict"):
+        entry = entry.dict()
+    if isinstance(entry, dict):
+        return {
+            "host": entry.get("host"),
+            "address": entry.get("address"),
+            "description": entry.get("description"),
+        }
+    return {
+        "host": getattr(entry, "host", None),
+        "address": getattr(entry, "address", None),
+        "description": getattr(entry, "description", None),
+    }
+
+
+def resolve_device_policy_ids(profile_csv, manager=None):
+    """Resolve a comma-separated list of custom device policy names/UUID-like IDs."""
+    if manager is None:
+        manager = _manager
+    if not profile_csv:
+        return []
+    if not manager.cf_client or not manager.account_id:
+        logging.error("Cloudflare client not initialized. Cannot resolve Warp device profiles.")
+        return []
+
+    profile_specs = [p.strip() for p in profile_csv.split(",") if p.strip()]
+    if not profile_specs:
+        return []
+
+    resolved = []
+    unresolved_names = []
+    for spec in profile_specs:
+        if _UUID_LIKE_RE.match(spec):
+            resolved.append(spec)
+        else:
+            unresolved_names.append(spec)
+
+    if unresolved_names:
+        try:
+            policies = list(
+                retry_on_api_error()(
+                    lambda: manager.cf_client.zero_trust.devices.policies.custom.list(
+                        account_id=manager.account_id
+                    )
+                )()
+            )
+        except cloudflare.APIError as e:
+            logging.error(f"Failed to list device policies while resolving Warp profiles: {e}")
+            return resolved
+
+        by_name = {getattr(policy, "name", None): getattr(policy, "id", None) for policy in policies}
+        for name in unresolved_names:
+            policy_id = by_name.get(name)
+            if policy_id:
+                resolved.append(policy_id)
+            else:
+                logging.warning(f"Warp profile '{name}' was not found in Cloudflare custom device policies.")
+
+    deduped = []
+    seen = set()
+    for policy_id in resolved:
+        if policy_id not in seen:
+            deduped.append(policy_id)
+            seen.add(policy_id)
+    return deduped
+
+
+def reconcile_warp_profiles(profile_ids, manager=None):
+    """Reconcile docker-dash-managed Warp includes for each provided profile ID."""
+    if manager is None:
+        manager = _manager
+    if not profile_ids:
+        return True
+    if not manager.cf_client or not manager.account_id:
+        logging.error("Cloudflare client not initialized. Cannot reconcile Warp split tunnel profiles.")
+        return False
+
+    ok = True
+    unique_profiles = []
+    seen = set()
+    for profile_id in profile_ids:
+        if profile_id and profile_id not in seen:
+            unique_profiles.append(profile_id)
+            seen.add(profile_id)
+
+    for profile_id in unique_profiles:
+        try:
+            _reconcile_warp_profile(profile_id, manager)
+        except Exception as e:
+            ok = False
+            logging.error(f"Unexpected error reconciling Warp profile '{profile_id}': {e}", exc_info=True)
+    return ok
+
+
+def _reconcile_warp_profile(profile_id, manager):
+    warp_db = get_warp_state_db()
+    desired_hostnames = warp_db.get_hostnames_for_profile(profile_id)
+
+    try:
+        existing_entries = list(
+            retry_on_api_error()(
+                lambda: manager.cf_client.zero_trust.devices.policies.custom.includes.get(
+                    policy_id=profile_id,
+                    account_id=manager.account_id,
+                )
+            )()
+        )
+    except cloudflare.APIError as e:
+        logging.error(f"Failed to fetch current Warp includes for profile '{profile_id}': {e}")
+        return
+
+    normalized_existing = [_normalize_split_tunnel_entry(entry) for entry in existing_entries]
+
+    manual_entries = []
+    seen_manual_hosts = set()
+    for entry in normalized_existing:
+        host = entry.get("host")
+        desc = entry.get("description")
+        if host and desc == WARP_MANAGED_DESCRIPTION:
+            continue
+        manual_entries.append(entry)
+        if host:
+            seen_manual_hosts.add(host)
+
+    updated_entries = []
+    for entry in manual_entries:
+        if entry.get("host"):
+            updated_entries.append({"host": entry["host"], **({"description": entry["description"]} if entry.get("description") else {})})
+        elif entry.get("address"):
+            updated_entries.append({"address": entry["address"], **({"description": entry["description"]} if entry.get("description") else {})})
+
+    for host in desired_hostnames:
+        if host in seen_manual_hosts:
+            continue
+        updated_entries.append({"host": host, "description": WARP_MANAGED_DESCRIPTION})
+
+    try:
+        retry_on_api_error()(
+            lambda: manager.cf_client.zero_trust.devices.policies.custom.includes.update(
+                policy_id=profile_id,
+                account_id=manager.account_id,
+                body=updated_entries,
+            )
+        )()
+        logging.info(
+            f"Reconciled Warp split-tunnel includes for profile '{profile_id}' with {len(updated_entries)} total entries ({len(desired_hostnames)} managed)."
+        )
+    except cloudflare.APIError as e:
+        logging.error(f"Failed to update Warp includes for profile '{profile_id}': {e}")
 
 class CloudflareJSONEncoder(json.JSONEncoder):
     """A custom JSON encoder for Cloudflare API objects."""

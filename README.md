@@ -10,6 +10,7 @@
 - **Automated Ingress Rules**: Automatically creates Cloudflare Tunnel ingress rules for your services.
 - **Automated CNAME Records**: Automatically creates CNAME records for your services.
 - **Automated Access Applications**: Automatically creates and infigures Cloudflare Access Applications to secure your public routes.
+- **Automated Warp Split Tunnels**: Automatically manages Cloudflare device profile split tunnel include hostnames from container labels.
 - **Label-Driven Configuration**: Use Docker labels as the single source of truth for all configurations.
 - **Live State Caching**: Maintains an in-memory cache of your Cloudflare configuration for efficient updates.
 - **Web UI**: lightweight web interface to view the application's cached state for easy troubleshooting.
@@ -34,7 +35,7 @@ The API Token you provide requires the following permissions to function correct
 
 | Permission Group | Permission | Access |
 |---|---|---|
-| Account | Zero Trust | Read |
+| Account | Zero Trust | Read, Edit |
 | Account | Tunnels | Read, Edit |
 | Account | Access: Apps and Policies | Read, Edit |
 | Account | Access: Identity Providers | Read |
@@ -80,6 +81,8 @@ services:
 | `RECONCILE_INTERVAL` | **No** | How often (in seconds) to reconcile local state with running containers. Set to `0` to disable. Defaults to `60`. |
 | `MANAGE_DNS_RECORDS` | **No** | Set to `false` to disable automatic DNS record creation/updates. Defaults to `true`. |
 | `DNS_HA_MODE` | **No** | Set to `true` to enable High Availability mode. When enabled, if a DNS record points to a different tunnel, it won't be updated (allows multiple tunnels to serve the same hostname). Defaults to `false`. |
+| `DOCKER_DASH_STATE_DB` | **No** | Path to the SQLite database used to persist docker-dash-managed tunnel, Access, and Warp ownership state. Defaults to `/tmp/docker-dash-state.db`. |
+| `WARP_STATE_DB` | **No** | Path to the SQLite database used to persist docker-dash-managed Warp split tunnel routes. Defaults to `/tmp/docker-dash-warp-state.db`. |
 
 ## High Availability (HA) Configuration
 
@@ -171,6 +174,21 @@ These labels allow you to automatically secure the public hostname with a Cloudf
 | `docker.dash.application.access.instantauth` | `true` | If set to `"true"` and only one login method is specified, users will be redirected to it instantly, skipping the login method selection screen. |
 | `docker.dash.application.access.icon` | `https://example.com/icon.png` | A URL for the icon to display on the App Launcher. |
 
+### Warp Split Tunnel Labels (Optional)
+
+These labels allow you to manage Cloudflare Zero Trust device profile split tunnel include hostnames.
+
+| Label | Example | Description |
+|---|---|---|
+| `docker.dash.warp` | `true` | Enables Warp split tunnel reconciliation for this container. |
+| `docker.dash.warp.profiles` | `ProfileA,ProfileB` | Comma-separated custom device profile names (or UUID-like IDs) to update. |
+
+Warp hostname source and behavior:
+
+- Hostnames are derived from Traefik router rules in labels matching `traefik.http.routers.*.rule` and only `Host(...)` expressions are parsed.
+- Warp reconciliation is independent from `docker.dash.enable`; it is controlled by `docker.dash.warp`.
+- docker-dash uses managed-only cleanup: it removes only entries it previously created (tagged internally as managed), and preserves manual/non-managed split tunnel includes.
+
 ### Full Example with a Service
 
 Here is how you would label a service (e.g., `ntfy`) in your `docker-compose.yml`:
@@ -192,6 +210,11 @@ services:
       - "docker.dash.application.access.loginmethods=Google"
       - "docker.dash.application.access.instantauth=true"
       - "docker.dash.application.access.icon=https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/ntfy.png"
+
+      # --- Warp Split Tunnel (Optional) ---
+      - "traefik.http.routers.ntfy.rule=Host(`ntfy.example.com`)"
+      - "docker.dash.warp=true"
+      - "docker.dash.warp.profiles=DeviceProfileA,DeviceProfileB"
 ```
 
 ## Debugging

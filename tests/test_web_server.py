@@ -32,6 +32,8 @@ class TestWSGIApp:
         response = b''.join(wsgi_app(environ, self._start_response))
         assert self.status == '200 OK'
         assert b'<!DOCTYPE html>' in response
+        assert b'HTTP Routed' in response
+        assert b'Warp Routed' in response
 
     def test_404_endpoint(self):
         """Test unknown paths return 404."""

@@ -10,6 +10,22 @@ from unittest.mock import MagicMock, Mock
 from datetime import datetime
 
 
+@pytest.fixture(autouse=True)
+def isolated_state_db(tmp_path, monkeypatch):
+    """Keep Warp and managed tunnel state in a per-test SQLite database."""
+    db_path = tmp_path / "docker-dash-state.db"
+    monkeypatch.delenv("DOCKER_DASH_STATE_DB", raising=False)
+    monkeypatch.setenv("WARP_STATE_DB", str(db_path))
+
+    import cloudflare_client
+
+    cloudflare_client._warp_state_db = None
+    cloudflare_client._container_state_db = None
+    yield
+    cloudflare_client._warp_state_db = None
+    cloudflare_client._container_state_db = None
+
+
 @pytest.fixture
 def mock_cloudflare_client():
     """Mock Cloudflare API client."""
@@ -140,6 +156,8 @@ def reset_cloudflare_state():
     original_client = cloudflare_client._manager.cf_client
     original_account = cloudflare_client._manager.account_id
     original_last_refresh = cloudflare_client._manager.last_cache_refresh
+    original_warp_db = cloudflare_client._warp_state_db
+    original_container_db = cloudflare_client._container_state_db
     
     # Clear state before test
     cloudflare_client._manager.tunnel_cache.clear()
@@ -150,6 +168,8 @@ def reset_cloudflare_state():
     cloudflare_client._manager.cf_client = None
     cloudflare_client._manager.account_id = None
     cloudflare_client._manager.last_cache_refresh = None
+    cloudflare_client._warp_state_db = None
+    cloudflare_client._container_state_db = None
     
     yield
     
@@ -162,3 +182,5 @@ def reset_cloudflare_state():
     cloudflare_client._manager.cf_client = original_client
     cloudflare_client._manager.account_id = original_account
     cloudflare_client._manager.last_cache_refresh = original_last_refresh
+    cloudflare_client._warp_state_db = original_warp_db
+    cloudflare_client._container_state_db = original_container_db

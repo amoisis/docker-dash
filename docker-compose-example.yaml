@@ -8,11 +8,15 @@ docker-dash:
     CF_ACCOUNT_ID: accountid
     CF_API_TOKEN: apitoken
     LOG_LEVEL: INFO
+    # Persist docker-dash managed state across restarts
+    # DOCKER_DASH_STATE_DB: /data/docker-dash-state.db
     # Optional: Configure web server port (default: 3445)
     # WEB_PORT: 3445
   volumes:
     # Mount Docker socket to listen for container events
     - /var/run/docker.sock:/var/run/docker.sock:ro
+    # Persist SQLite state used for Warp, tunnel, and Access ownership
+    - docker-dash-state:/data
     # Alternative: Use Docker socket proxy (uncomment and configure)
     # environment:
     #   DOCKER_HOST: tcp://<proxy-host>:<proxy-port>
@@ -22,11 +26,17 @@ example-service:
   image: example-service:latest  
   container_name: example-service
   labels:
+    - traefik.http.routers.example-service.rule=Host(`example-service.example.com`)
     - docker.dash.enable=true
     - docker.dash.hostname=example-service.example.com
     - docker.dash.tunnel=example-tunnel
     - docker.dash.service=http://example-service
+    - docker.dash.warp=true
+    - docker.dash.warp.profiles=DeviceProfileA,DeviceProfileB
     - docker.dash.application.access.policy=Policy1,Policy2
     - docker.dash.application.access.loginmethods=AuthenticationService
     - docker.dash.application.access.instantauth=true
     - docker.dash.application.access.icon=https://example-service.example.com/icon.png
+
+volumes:
+  docker-dash-state:

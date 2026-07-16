@@ -1072,6 +1072,8 @@
                         // Container Status Section
                         if (containerIds.length > 0) {
                             const activeContainers = [];
+                            const httpRoutedContainers = [];
+                            const warpRoutedContainers = [];
                             const disabledContainers = [];
                             const misconfiguredContainers = [];
                             
@@ -1079,6 +1081,12 @@
                                 const container = containers[id];
                                 if (container.status === 'active') {
                                     activeContainers.push(container);
+                                    if (container.tunnel && container.hostname && container.service) {
+                                        httpRoutedContainers.push(container);
+                                    }
+                                    if (container.warp_enabled || container.warp_active || (container.warp_profile_count || 0) > 0) {
+                                        warpRoutedContainers.push(container);
+                                    }
                                 } else if (container.status === 'disabled') {
                                     disabledContainers.push(container);
                                 } else if (container.status === 'misconfigured') {
@@ -1099,6 +1107,29 @@
                                     c.has_access_policy ? '<span class="badge badge-active">Yes</span>' : '<span class="badge badge-disabled">No</span>'
                                 ]);
                                 containerHtml += createTable(['Container', 'Tunnel', 'Hostname', 'Service', 'Access Policy'], activeRows);
+                            }
+
+                            if (httpRoutedContainers.length > 0) {
+                                containerHtml += '<h3><span class="badge badge-info">HTTP Routed (' + httpRoutedContainers.length + ')</span></h3>';
+                                const httpRows = httpRoutedContainers.map(c => [
+                                    c.name,
+                                    c.tunnel,
+                                    c.hostname,
+                                    c.service,
+                                    c.has_access_policy ? '<span class="badge badge-active">Yes</span>' : '<span class="badge badge-disabled">No</span>'
+                                ]);
+                                containerHtml += createTable(['Container', 'Tunnel', 'Hostname', 'Service', 'Access Policy'], httpRows);
+                            }
+
+                            if (warpRoutedContainers.length > 0) {
+                                containerHtml += '<h3><span class="badge badge-primary">Warp Routed (' + warpRoutedContainers.length + ')</span></h3>';
+                                const warpRows = warpRoutedContainers.map(c => [
+                                    c.name,
+                                    (c.warp_hostnames || []).join(', ') || '<i>None</i>',
+                                    c.warp_profile_count || 0,
+                                    c.warp_active ? '<span class="badge badge-active">Active</span>' : '<span class="badge badge-disabled">Disabled</span>'
+                                ]);
+                                containerHtml += createTable(['Container', 'Hostnames', 'Profiles', 'State'], warpRows);
                             }
                             
                             // Misconfigured containers
