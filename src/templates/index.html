@@ -1084,7 +1084,7 @@
                                     if (container.tunnel && container.hostname && container.service) {
                                         httpRoutedContainers.push(container);
                                     }
-                                    if (container.warp_enabled || container.warp_active || (container.warp_profile_count || 0) > 0) {
+                                    if (container.warp_enabled || container.warp_active || (container.warp_route_count || 0) > 0) {
                                         warpRoutedContainers.push(container);
                                     }
                                 } else if (container.status === 'disabled') {
@@ -1126,10 +1126,10 @@
                                 const warpRows = warpRoutedContainers.map(c => [
                                     c.name,
                                     (c.warp_hostnames || []).join(', ') || '<i>None</i>',
-                                    c.warp_profile_count || 0,
+                                    c.warp_route_count || 0,
                                     c.warp_active ? '<span class="badge badge-active">Active</span>' : '<span class="badge badge-disabled">Disabled</span>'
                                 ]);
-                                containerHtml += createTable(['Container', 'Hostnames', 'Profiles', 'State'], warpRows);
+                                containerHtml += createTable(['Container', 'Hostnames', 'Private Routes', 'State'], warpRows);
                             }
                             
                             // Misconfigured containers

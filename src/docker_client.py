@@ -9,13 +9,14 @@ from types import SimpleNamespace
 from cloudflare_client import (
     add_or_update_ingress_rule, 
     add_or_update_access_application, 
+    ensure_private_hostname_route,
     get_container_state_db,
     get_warp_state_db,
     reconcile_warp_profiles,
     remove_cname_record,
     remove_ingress_rule, 
     remove_access_application,
-    resolve_device_policy_ids,
+    remove_private_hostname_route,
 )
 
 # Debounce settings
@@ -111,8 +112,8 @@ def _is_local_swarm_task(container):
 
 
 def _resource_key(resource_type, hostname, tunnel_name=None):
-    if resource_type == "ingress":
-        return f"ingress:{tunnel_name}:{hostname}"
+    if resource_type in {"ingress", "hostname_route"}:
+        return f"{resource_type}:{tunnel_name}:{hostname}"
     return f"{resource_type}:{hostname}"
 
 
@@ -127,6 +128,12 @@ def _record_managed_resource(
         ownership = "legacy_unknown"
     result_remote_id = getattr(operation_result, "remote_id", None)
     result_outcome = getattr(operation_result, "outcome", None)
+    result_original_state = getattr(operation_result, "original_state", None)
+    if result_original_state is not None and not isinstance(
+        result_original_state,
+        (dict, list, tuple, str, int, float, bool, datetime),
+    ):
+        result_original_state = None
     if existing and existing["ownership"] == "created" and ownership != "created":
         same_remote = bool(
             result_remote_id
@@ -137,8 +144,10 @@ def _record_managed_resource(
             ownership = "created"
         elif resource_type == "dns" and same_remote and result_outcome == "unchanged":
             ownership = "created"
+        elif resource_type == "hostname_route" and same_remote:
+            ownership = "created"
         elif resource_type == "ingress":
-            previous = getattr(operation_result, "original_state", None) or {}
+            previous = result_original_state or {}
             previous_fingerprint = None
             if previous:
                 tunnel_id = str(result_remote_id or "").split("|", 1)[0]
@@ -158,7 +167,7 @@ def _record_managed_resource(
         remote_id=result_remote_id
         or (existing and existing["remote_id"]),
         ownership=ownership,
-        original_state_json=getattr(operation_result, "original_state", None)
+        original_state_json=result_original_state
         or (existing and existing["original_state_json"]),
     )
     if hasattr(container_db, "cancel_cleanup"):
@@ -227,6 +236,10 @@ def _run_due_cleanup_jobs():
             has_owner = (
                 container_db.count_active_route_claims(tunnel_name, hostname) > 0
                 if resource_type == "ingress"
+                else get_warp_state_db().count_private_hostname_claims(
+                    tunnel_name, hostname
+                ) > 0
+                if resource_type == "hostname_route"
                 else container_db.count_active_hostname_claims(hostname) > 0
                 if resource_type == "dns"
                 else container_db.count_active_access_claims(hostname) > 0
@@ -251,6 +264,12 @@ def _run_due_cleanup_jobs():
                     result = remove_access_application(
                         hostname, remote_id=current_resource["remote_id"]
                     )
+                elif resource_type == "hostname_route":
+                    result = remove_private_hostname_route(
+                        hostname,
+                        tunnel_name,
+                        remote_id=current_resource["remote_id"],
+                    )
                 else:
                     raise ValueError(f"Unsupported cleanup resource type: {resource_type}")
 
@@ -273,9 +292,11 @@ def _run_due_cleanup_jobs():
 
 
 def parse_warp_labels(dash_labels):
-    """Parse Warp labels from docker.dash labels."""
+    """Parse private hostname routing labels."""
     return {
         "enabled": dash_labels.get("docker.dash.warp", "false") == "true",
+        "tunnel": dash_labels.get("docker.dash.tunnel"),
+        # Retained only to migrate entries created by releases <= v0.4.1.
         "profiles": dash_labels.get("docker.dash.warp.profiles", ""),
     }
 
@@ -299,12 +320,45 @@ def extract_traefik_hostnames(container_labels):
 
 
 def _cleanup_warp_for_container(container_id):
-    """Remove all managed Warp routes for a container and reconcile affected profiles."""
+    """Retire private hostname claims and migrate legacy Split Tunnel entries."""
     warp_db = get_warp_state_db()
-    removed_routes = warp_db.delete_routes_for_container(container_id)
-    affected_profiles = sorted({profile_id for profile_id, _hostname in removed_routes})
-    if affected_profiles:
-        reconcile_warp_profiles(affected_profiles)
+    container_db = get_container_state_db()
+    for tunnel_name, hostname in warp_db.get_private_hostname_claims(container_id):
+        warp_db.remove_private_hostname_claim(container_id, tunnel_name, hostname)
+        if warp_db.count_private_hostname_claims(tunnel_name, hostname) == 0:
+            key = _resource_key("hostname_route", hostname, tunnel_name)
+            resource = container_db.get_resource(key)
+            if resource and resource["ownership"] == "created":
+                container_db.mark_resource_cleanup_pending(
+                    key, "remove_hostname_route"
+                )
+    _cleanup_legacy_warp_profile_claims(container_id)
+
+
+def _cleanup_legacy_warp_profile_claims(owner_id):
+    """Remove legacy per-host Split Tunnel entries and roll back on API failure."""
+    warp_db = get_warp_state_db()
+    legacy_routes = warp_db.get_routes_for_owner(owner_id)
+    if not legacy_routes:
+        return True
+    for profile_id, hostname in legacy_routes:
+        warp_db.remove_route(owner_id, profile_id, hostname)
+    profiles = sorted({profile_id for profile_id, _hostname in legacy_routes})
+    if reconcile_warp_profiles(profiles):
+        logging.info(
+            "Removed %d legacy per-host Warp Split Tunnel entries for '%s'.",
+            len(legacy_routes),
+            owner_id,
+        )
+        return True
+    for profile_id, hostname in legacy_routes:
+        warp_db.upsert_owner_route(owner_id, profile_id, hostname)
+    logging.warning(
+        "Could not remove legacy Warp Split Tunnel entries for '%s'; "
+        "local claims were restored for a later retry.",
+        owner_id,
+    )
+    return False
 
 
 def _cleanup_container_resources(container_id, fallback_state=None, fallback_labels=None):
@@ -457,81 +511,101 @@ def _cleanup_stopped_container_resources(
 
 
 def _reconcile_container_warp_state(container_id, container_name, container_labels, dash_labels):
-    """Reconcile desired Warp routes for this container against persistent state and Cloudflare."""
+    """Reconcile Traefik hostnames as Zero Trust private hostname routes."""
     warp_cfg = parse_warp_labels(dash_labels)
     warp_db = get_warp_state_db()
-    current_routes = set(warp_db.get_routes_for_container(container_id))
+    current_routes = set(warp_db.get_private_hostname_claims(container_id))
 
     if not warp_cfg["enabled"]:
-        if current_routes:
-            logging.info(f"Warp disabled for '{container_name}'. Cleaning up {len(current_routes)} managed route(s).")
+        if current_routes or warp_db.get_routes_for_owner(container_id):
+            logging.info(
+                "Private hostname routing disabled for '%s'. Cleaning up managed claims.",
+                container_name,
+            )
             _cleanup_warp_for_container(container_id)
         return {"enabled": False, "misconfigured": False, "active": False}
 
     desired_hostnames = extract_traefik_hostnames(container_labels)
-    profile_ids = resolve_device_policy_ids(warp_cfg["profiles"])
+    tunnel_name = warp_cfg["tunnel"]
+    if warp_cfg["profiles"]:
+        logging.warning(
+            "docker.dash.warp.profiles on '%s' is deprecated and no longer "
+            "mutates device profiles; configure WARP synthetic routes once "
+            "at the account/profile level.",
+            container_name,
+        )
 
-    if not desired_hostnames or not profile_ids:
+    if not desired_hostnames or not tunnel_name:
         if current_routes:
             logging.warning(
-                f"Warp enabled for '{container_name}' but configuration is incomplete. Removing existing managed routes."
+                "Private hostname routing for '%s' is incomplete. Removing stale claims.",
+                container_name,
             )
             _cleanup_warp_for_container(container_id)
         return {
             "enabled": True,
             "misconfigured": True,
             "active": False,
-            "reason": "Missing Traefik Host(...) rules or unresolved warp profiles",
+            "reason": "Missing Traefik Host(...) rules or docker.dash.tunnel",
         }
 
-    desired_routes = {(profile_id, hostname) for profile_id in profile_ids for hostname in desired_hostnames}
+    _cleanup_legacy_warp_profile_claims(container_id)
+    desired_routes = {(tunnel_name, hostname) for hostname in desired_hostnames}
+    failures = []
+    applied = 0
+    container_db = get_container_state_db()
+    for desired_tunnel, hostname in sorted(desired_routes):
+        result = ensure_private_hostname_route(hostname, desired_tunnel)
+        if not result or not getattr(result, "success", False):
+            failures.append(
+                getattr(result, "error", None)
+                or f"Failed to reconcile private hostname route for {hostname}"
+            )
+            continue
+        _record_managed_resource(
+            container_db,
+            "hostname_route",
+            hostname,
+            tunnel_name=desired_tunnel,
+            operation_result=result,
+        )
+        warp_db.upsert_private_hostname_claim(
+            container_id, desired_tunnel, hostname
+        )
+        applied += 1
 
     removed = current_routes - desired_routes
-    added = desired_routes - current_routes
-
-    for profile_id, hostname in removed:
-        warp_db.remove_route(container_id, profile_id, hostname)
-    for profile_id, hostname in added:
-        warp_db.upsert_route(container_id, profile_id, hostname)
-
-    affected_profiles = sorted({profile_id for profile_id, _hostname in removed | added})
-    if affected_profiles:
-        reconcile_warp_profiles(affected_profiles)
-        logging.info(
-            f"Reconciled Warp state for '{container_name}' ({len(added)} added, {len(removed)} removed, {len(affected_profiles)} profile(s) touched)."
+    for old_tunnel, old_hostname in removed:
+        warp_db.remove_private_hostname_claim(
+            container_id, old_tunnel, old_hostname
         )
+        if warp_db.count_private_hostname_claims(old_tunnel, old_hostname) == 0:
+            key = _resource_key("hostname_route", old_hostname, old_tunnel)
+            resource = container_db.get_resource(key)
+            if resource and resource["ownership"] == "created":
+                container_db.mark_resource_cleanup_pending(
+                    key, "remove_hostname_route"
+                )
+
+    logging.info(
+        "Reconciled private hostname routing for '%s' "
+        "(%d applied, %d removed, %d failed).",
+        container_name,
+        applied,
+        len(removed),
+        len(failures),
+    )
 
     return {
         "enabled": True,
         "misconfigured": False,
-        "active": True,
+        "active": not failures and applied == len(desired_routes),
         "hostnames": desired_hostnames,
-        "profile_count": len(profile_ids),
+        "route_count": applied,
+        "profile_count": 0,
+        **({"reason": "; ".join(failures)} if failures else {}),
     }
 
-
-def _reconcile_warp_tunnel_routes(container_name, dash_labels, warp_state):
-    """Ensure Traefik-derived Warp hostnames have tunnel ingress routes when tunnel/service are provided."""
-    if not warp_state.get("enabled"):
-        return
-
-    hostnames = warp_state.get("hostnames", [])
-    if not hostnames:
-        return
-
-    tunnel_name = dash_labels.get("docker.dash.tunnel")
-    service = dash_labels.get("docker.dash.service")
-    if not tunnel_name or not service:
-        logging.debug(
-            f"Warp is enabled for '{container_name}' but docker.dash.tunnel/service is missing; skipping private hostname tunnel route reconciliation."
-        )
-        return
-
-    if service.endswith('/'):
-        service = service.rstrip('/')
-
-    for hostname in hostnames:
-        add_or_update_ingress_rule(tunnel_name, {"hostname": hostname, "service": service})
 
 def get_docker_client():
     """
@@ -618,16 +692,38 @@ def _process_container_locked(container, *, force=False):
             if not is_enabled:
                 # Determine if disabled or misconfigured
                 if enable_label != "true":
-                    logging.debug(f"Container '{container.name}' is disabled (docker.dash.enable != true). Skipping.")
+                    if warp_state.get("active"):
+                        status = "active"
+                        reason = "Private hostname routing is active; published routing is disabled"
+                    elif warp_state.get("enabled") and warp_state.get("misconfigured"):
+                        status = "misconfigured"
+                        reason = warp_state.get(
+                            "reason", "Private hostname routing is misconfigured"
+                        )
+                    elif warp_state.get("enabled"):
+                        status = "error"
+                        reason = warp_state.get(
+                            "reason", "Private hostname routing failed"
+                        )
+                    else:
+                        status = "disabled"
+                        reason = "docker.dash.enable is not set to 'true'"
+                    logging.debug(
+                        "Container '%s' published routing is disabled; status=%s.",
+                        container.name,
+                        status,
+                    )
                     _container_status[container_id] = {
                         "name": container.name,
                         "owner_id": container_id,
                         "owner_kind": owner_kind,
-                        "status": "disabled",
-                        "reason": "docker.dash.enable is not set to 'true'",
+                        "status": status,
+                        "reason": reason,
                         "labels": dash_labels,
                         "warp_enabled": warp_state.get("enabled", False),
                         "warp_active": warp_state.get("active", False),
+                        "warp_hostnames": warp_state.get("hostnames", []),
+                        "warp_route_count": warp_state.get("route_count", 0),
                     }
                 else:
                     # Enabled but missing required labels
@@ -670,8 +766,6 @@ def _process_container_locked(container, *, force=False):
                 new_service,
                 access_desired=bool(access_policy),
             )
-            _reconcile_warp_tunnel_routes(container.name, dash_labels, warp_state)
-
         # Sanitize the service URL
         if new_service.endswith('/'):
             new_service = new_service.rstrip('/')
@@ -777,6 +871,7 @@ def _process_container_locked(container, *, force=False):
                 "warp_enabled": warp_state.get("enabled", False),
                 "warp_active": warp_state.get("active", False),
                 "warp_hostnames": warp_state.get("hostnames", []),
+                "warp_route_count": warp_state.get("route_count", 0),
                 "warp_profile_count": warp_state.get("profile_count", 0),
             }
             if owner_kind == "swarm_service":

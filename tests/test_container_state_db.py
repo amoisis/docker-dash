@@ -271,11 +271,19 @@ def test_canonical_resource_key_helpers():
         == "dns:app.example.com"
     )
     assert (
+        ContainerStateDB.resource_key(
+            "hostname_route", "app.example.com", tunnel_name="main"
+        )
+        == "hostname_route:main:app.example.com"
+    )
+    assert (
         ContainerStateDB.resource_key("access", "app.example.com")
         == "access:app.example.com"
     )
     with pytest.raises(ValueError):
         ContainerStateDB.resource_key("ingress", "app.example.com")
+    with pytest.raises(ValueError):
+        ContainerStateDB.resource_key("hostname_route", "app.example.com")
     with pytest.raises(ValueError):
         ContainerStateDB.resource_key("unknown", "app.example.com")
 
