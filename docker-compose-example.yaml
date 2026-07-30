@@ -38,7 +38,6 @@ example-service:
     - docker.dash.tunnel=example-tunnel
     - docker.dash.service=http://example-service
     - docker.dash.warp=true
-    - docker.dash.warp.profiles=DeviceProfileA,DeviceProfileB
     - docker.dash.application.access.policy=Policy1,Policy2
     - docker.dash.application.access.loginmethods=AuthenticationService
     - docker.dash.application.access.instantauth=true

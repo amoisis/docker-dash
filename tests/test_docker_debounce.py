@@ -119,3 +119,30 @@ class TestDockerDebouncing:
             
             # Should not process (missing required labels)
             assert not mock_add.called
+
+    def test_private_hostname_only_container_reports_active(self, monkeypatch):
+        monkeypatch.setattr(docker_client, '_last_processed_time', {})
+        monkeypatch.setattr(docker_client, '_container_ingress_state', {})
+        monkeypatch.setattr(docker_client, '_container_status', {})
+        container = Mock()
+        container.id = "private-route"
+        container.name = "private-app"
+        container.labels = {"docker.dash.warp": "true"}
+        warp_state = {
+            "enabled": True,
+            "misconfigured": False,
+            "active": True,
+            "hostnames": ["private.example.com"],
+            "route_count": 1,
+        }
+
+        with patch(
+            "docker_client._reconcile_container_warp_state",
+            return_value=warp_state,
+        ):
+            docker_client.process_container(container)
+
+        status = docker_client.get_container_statuses()[container.id]
+        assert status["status"] == "active"
+        assert status["warp_active"] is True
+        assert status["warp_route_count"] == 1

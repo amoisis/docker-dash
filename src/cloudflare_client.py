@@ -91,7 +91,7 @@ def _ingress_fingerprint(tunnel_id, hostname, service):
 
 
 class WarpStateDB:
-    """SQLite-backed storage for docker-dash-managed Warp split tunnel entries."""
+    """SQLite-backed claims for private hostname routes and legacy Warp entries."""
 
     def __init__(self, db_path=None):
         self.db_path = db_path or os.environ.get("WARP_STATE_DB", "/tmp/docker-dash-warp-state.db")
@@ -120,6 +120,23 @@ class WarpStateDB:
                 """
                 CREATE INDEX IF NOT EXISTS idx_warp_profile_id
                 ON warp_routes(profile_id)
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS private_hostname_route_claims (
+                    owner_id TEXT NOT NULL,
+                    tunnel_name TEXT NOT NULL,
+                    hostname TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (owner_id, tunnel_name, hostname)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_private_hostname_route
+                ON private_hostname_route_claims(tunnel_name, hostname)
                 """
             )
 
@@ -195,9 +212,70 @@ class WarpStateDB:
     def list_owner_ids(self):
         with self._lock, self._connect() as conn:
             rows = conn.execute(
-                "SELECT DISTINCT container_id FROM warp_routes"
+                """
+                SELECT container_id FROM warp_routes
+                UNION
+                SELECT owner_id FROM private_hostname_route_claims
+                """
             ).fetchall()
         return [row[0] for row in rows]
+
+    def upsert_private_hostname_claim(self, owner_id, tunnel_name, hostname):
+        now = datetime.now(timezone.utc).isoformat()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO private_hostname_route_claims (
+                    owner_id, tunnel_name, hostname, updated_at
+                )
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(owner_id, tunnel_name, hostname)
+                DO UPDATE SET updated_at = excluded.updated_at
+                """,
+                (owner_id, tunnel_name, hostname, now),
+            )
+
+    def get_private_hostname_claims(self, owner_id):
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT tunnel_name, hostname
+                FROM private_hostname_route_claims
+                WHERE owner_id = ?
+                """,
+                (owner_id,),
+            ).fetchall()
+        return [(row[0], row[1]) for row in rows]
+
+    def remove_private_hostname_claim(self, owner_id, tunnel_name, hostname):
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                DELETE FROM private_hostname_route_claims
+                WHERE owner_id = ? AND tunnel_name = ? AND hostname = ?
+                """,
+                (owner_id, tunnel_name, hostname),
+            )
+
+    def delete_private_hostname_claims(self, owner_id):
+        claims = self.get_private_hostname_claims(owner_id)
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "DELETE FROM private_hostname_route_claims WHERE owner_id = ?",
+                (owner_id,),
+            )
+        return claims
+
+    def count_private_hostname_claims(self, tunnel_name, hostname):
+        with self._lock, self._connect() as conn:
+            return conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM private_hostname_route_claims
+                WHERE tunnel_name = ? AND hostname = ?
+                """,
+                (tunnel_name, hostname),
+            ).fetchone()[0]
 
 
 class ContainerStateDB:
@@ -219,10 +297,10 @@ class ContainerStateDB:
     @staticmethod
     def resource_key(resource_type, hostname, tunnel_name=None):
         """Return the canonical stable key for a managed Cloudflare resource."""
-        if resource_type == "ingress":
+        if resource_type in {"ingress", "hostname_route"}:
             if not tunnel_name:
-                raise ValueError("Ingress resources require a tunnel name")
-            return f"ingress:{tunnel_name}:{hostname}"
+                raise ValueError(f"{resource_type} resources require a tunnel name")
+            return f"{resource_type}:{tunnel_name}:{hostname}"
         if resource_type in {"dns", "access"}:
             return f"{resource_type}:{hostname}"
         raise ValueError(f"Unsupported managed resource type: {resource_type}")
@@ -769,6 +847,202 @@ def _normalize_split_tunnel_entry(entry):
     }
 
 
+def _model_dict(value):
+    if hasattr(value, "dict"):
+        return value.dict()
+    if isinstance(value, dict):
+        return dict(value)
+    return {
+        key: getattr(value, key, None)
+        for key in (
+            "id", "hostname", "tunnel_id", "tunnel_name", "tun_type",
+            "comment", "created_at", "deleted_at",
+        )
+    }
+
+
+def _resolve_tunnel_by_name(tunnel_name, manager):
+    with manager._cache_lock:
+        return next(
+            (
+                data["tunnel_object"]
+                for data in manager.tunnel_cache.values()
+                if data["tunnel_object"].name == tunnel_name
+            ),
+            None,
+        )
+
+
+def ensure_private_hostname_route(hostname, tunnel_name, manager=None):
+    """Create or adopt a Zero Trust private hostname route."""
+    if manager is None:
+        manager = _manager
+    try:
+        validate_hostname(hostname)
+        validate_tunnel_name(tunnel_name)
+    except ValidationError as error:
+        return _operation_failure("ensure_private_hostname_route", error)
+    if not manager.cf_client or not manager.account_id:
+        return _operation_failure(
+            "ensure_private_hostname_route",
+            "Cloudflare client or account ID not initialized",
+        )
+
+    tunnel = _resolve_tunnel_by_name(tunnel_name, manager)
+    if not tunnel:
+        return _operation_failure(
+            "ensure_private_hostname_route",
+            f"Tunnel '{tunnel_name}' not found in cache",
+            outcome="unknown",
+        )
+    tunnel_id = str(tunnel.id)
+
+    try:
+        routes = list(
+            retry_on_api_error()(
+                lambda: manager.cf_client.zero_trust.networks.hostname_routes.list(
+                    account_id=manager.account_id,
+                    hostname=hostname,
+                    is_deleted=False,
+                    per_page=1000,
+                )
+            )()
+        )
+        exact_routes = [
+            route
+            for route in routes
+            if str(getattr(route, "hostname", "")).lower() == hostname.lower()
+        ]
+        matching = next(
+            (
+                route
+                for route in exact_routes
+                if str(getattr(route, "tunnel_id", "")) == tunnel_id
+            ),
+            None,
+        )
+        if matching:
+            logging.info(
+                "Private hostname route '%s' already points to tunnel '%s'.",
+                hostname,
+                tunnel_name,
+            )
+            return CloudflareOperationResult(
+                operation="ensure_private_hostname_route",
+                outcome="unchanged",
+                success=True,
+                ownership="adopted",
+                remote_id=str(matching.id),
+                original_state=_model_dict(matching),
+            )
+        if exact_routes:
+            existing = exact_routes[0]
+            return _operation_failure(
+                "ensure_private_hostname_route",
+                (
+                    f"Private hostname route '{hostname}' already points to "
+                    f"tunnel '{getattr(existing, 'tunnel_name', None) or getattr(existing, 'tunnel_id', 'unknown')}'"
+                ),
+                outcome="ownership_conflict",
+            )
+
+        created = retry_on_api_error()(
+            lambda: manager.cf_client.zero_trust.networks.hostname_routes.create(
+                account_id=manager.account_id,
+                hostname=hostname,
+                tunnel_id=tunnel_id,
+                comment=WARP_MANAGED_DESCRIPTION,
+            )
+        )()
+        logging.info(
+            "Created private hostname route '%s' through tunnel '%s'.",
+            hostname,
+            tunnel_name,
+        )
+        return CloudflareOperationResult(
+            operation="ensure_private_hostname_route",
+            outcome="created",
+            success=True,
+            ownership="created",
+            remote_id=str(created.id),
+        )
+    except cloudflare.APIError as error:
+        logging.error(
+            "Failed to reconcile private hostname route '%s': %s",
+            hostname,
+            error,
+        )
+        return _operation_failure("ensure_private_hostname_route", error)
+    except Exception as error:
+        logging.error(
+            "Unexpected error reconciling private hostname route '%s': %s",
+            hostname,
+            error,
+            exc_info=True,
+        )
+        return _operation_failure("ensure_private_hostname_route", error)
+
+
+def remove_private_hostname_route(
+    hostname, tunnel_name, manager=None, remote_id=None
+):
+    """Delete an owned private hostname route by its exact Cloudflare ID."""
+    if manager is None:
+        manager = _manager
+    if not remote_id:
+        return _operation_failure(
+            "remove_private_hostname_route",
+            f"No managed route ID recorded for '{hostname}'",
+            outcome="unknown",
+        )
+    if not manager.cf_client or not manager.account_id:
+        return _operation_failure(
+            "remove_private_hostname_route",
+            "Cloudflare client or account ID not initialized",
+        )
+    try:
+        retry_on_api_error()(
+            lambda: manager.cf_client.zero_trust.networks.hostname_routes.delete(
+                str(remote_id),
+                account_id=manager.account_id,
+            )
+        )()
+        logging.info(
+            "Removed private hostname route '%s' from tunnel '%s'.",
+            hostname,
+            tunnel_name,
+        )
+        return CloudflareOperationResult(
+            operation="remove_private_hostname_route",
+            outcome="removed",
+            success=True,
+            remote_id=str(remote_id),
+        )
+    except cloudflare.APIError as error:
+        if getattr(error, "status_code", None) == 404:
+            return CloudflareOperationResult(
+                operation="remove_private_hostname_route",
+                outcome="absent",
+                success=True,
+                confirmed_absent=True,
+                remote_id=str(remote_id),
+            )
+        logging.error(
+            "Failed to remove private hostname route '%s': %s",
+            hostname,
+            error,
+        )
+        return _operation_failure("remove_private_hostname_route", error)
+    except Exception as error:
+        logging.error(
+            "Unexpected error removing private hostname route '%s': %s",
+            hostname,
+            error,
+            exc_info=True,
+        )
+        return _operation_failure("remove_private_hostname_route", error)
+
+
 def resolve_device_policy_ids(profile_csv, manager=None):
     """Resolve a comma-separated list of custom device policy names/UUID-like IDs."""
     if manager is None:
@@ -841,7 +1115,8 @@ def reconcile_warp_profiles(profile_ids, manager=None):
 
     for profile_id in unique_profiles:
         try:
-            _reconcile_warp_profile(profile_id, manager)
+            if not _reconcile_warp_profile(profile_id, manager):
+                ok = False
         except Exception as e:
             ok = False
             logging.error(f"Unexpected error reconciling Warp profile '{profile_id}': {e}", exc_info=True)
@@ -863,7 +1138,7 @@ def _reconcile_warp_profile(profile_id, manager):
         )
     except cloudflare.APIError as e:
         logging.error(f"Failed to fetch current Warp includes for profile '{profile_id}': {e}")
-        return
+        return False
 
     normalized_existing = [_normalize_split_tunnel_entry(entry) for entry in existing_entries]
 
@@ -901,16 +1176,24 @@ def _reconcile_warp_profile(profile_id, manager):
         logging.info(
             f"Reconciled Warp split-tunnel includes for profile '{profile_id}' with {len(updated_entries)} total entries ({len(desired_hostnames)} managed)."
         )
+        return True
     except cloudflare.APIError as e:
         logging.error(f"Failed to update Warp includes for profile '{profile_id}': {e}")
+        return False
 
 class CloudflareJSONEncoder(json.JSONEncoder):
     """A custom JSON encoder for Cloudflare API objects."""
     def default(self, obj):
         if isinstance(obj, datetime):
             return obj.isoformat()
-        if hasattr(obj, 'dict'):
-            return obj.dict()
+        dict_method = getattr(obj, "dict", None)
+        if callable(dict_method):
+            converted = dict_method()
+            if isinstance(
+                converted,
+                (dict, list, tuple, str, int, float, bool, type(None)),
+            ):
+                return converted
         # For other types, fall back to the default encoder
         return super().default(obj)
 

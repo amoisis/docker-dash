@@ -37,6 +37,7 @@ The API Token you provide requires the following permissions to function correct
 |---|---|---|
 | Account | Zero Trust | Read, Edit |
 | Account | Tunnels | Read, Edit |
+| Account | Cloudflare One Networks | Read, Edit |
 | Account | Access: Apps and Policies | Read, Edit |
 | Account | Access: Identity Providers | Read |
 | Zone | DNS | Read, Edit |
@@ -84,8 +85,8 @@ services:
 | `SWARM_DISCOVERY_MODE` | **No** | `containers` (default) preserves local Docker discovery. `manager` discovers Swarm services across all nodes and requires Docker Dash on a manager. `auto` selects manager discovery only when the connected daemon is a manager. |
 | `MANAGE_DNS_RECORDS` | **No** | Set to `false` to disable automatic DNS record creation/updates. Defaults to `true`. |
 | `DNS_HA_MODE` | **No** | Set to `true` to enable High Availability mode. When enabled, if a DNS record points to a different tunnel, it won't be updated (allows multiple tunnels to serve the same hostname). Defaults to `false`. |
-| `DOCKER_DASH_STATE_DB` | **No** | Path to the SQLite database used to persist docker-dash-managed tunnel, Access, and Warp ownership state. Defaults to `/tmp/docker-dash-state.db`. |
-| `WARP_STATE_DB` | **No** | Path to the SQLite database used to persist docker-dash-managed Warp split tunnel routes. Defaults to `/tmp/docker-dash-warp-state.db`. |
+| `DOCKER_DASH_STATE_DB` | **No** | Path to the SQLite database used to persist docker-dash-managed tunnel, Access, and private-hostname ownership state. Defaults to `/tmp/docker-dash-state.db`. |
+| `WARP_STATE_DB` | **No** | Path to the SQLite database used to persist private-hostname owner claims and migrate legacy split-tunnel entries. Defaults to `/tmp/docker-dash-warp-state.db`. |
 
 ### Docker Swarm Secrets
 
@@ -226,20 +227,25 @@ These labels allow you to automatically secure the public hostname with a Cloudf
 | `docker.dash.application.access.instantauth` | `true` | If set to `"true"` and only one login method is specified, users will be redirected to it instantly, skipping the login method selection screen. |
 | `docker.dash.application.access.icon` | `https://example.com/icon.png` | A URL for the icon to display on the App Launcher. |
 
-### Warp Split Tunnel Labels (Optional)
+### WARP Private Hostname Labels (Optional)
 
-These labels allow you to manage Cloudflare Zero Trust device profile split tunnel include hostnames.
+These labels manage Cloudflare Zero Trust private hostname routes. They do not
+modify WARP device profiles. Configure the synthetic private-hostname ranges in
+the applicable device profiles once at the account level.
 
 | Label | Example | Description |
 |---|---|---|
-| `docker.dash.warp` | `true` | Enables Warp split tunnel reconciliation for this container. |
-| `docker.dash.warp.profiles` | `ProfileA,ProfileB` | Comma-separated custom device profile names (or UUID-like IDs) to update. |
+| `docker.dash.warp` | `true` | Enables private hostname route reconciliation for this owner. |
+| `docker.dash.tunnel` | `my-main-tunnel` | Cloudflare Tunnel that should receive the private hostname route. |
+| `docker.dash.warp.profiles` | — | Deprecated. Releases after v0.4.1 do not mutate device profiles. |
 
-Warp hostname source and behavior:
+Private hostname source and behavior:
 
 - Hostnames are derived from Traefik router rules in labels matching `traefik.http.routers.*.rule` and only `Host(...)` expressions are parsed.
-- Warp reconciliation is independent from `docker.dash.enable`; it is controlled by `docker.dash.warp`.
-- docker-dash uses managed-only cleanup: it removes only entries it previously created (tagged internally as managed), and preserves manual/non-managed split tunnel includes.
+- Private hostname reconciliation is independent from `docker.dash.enable`; it is controlled by `docker.dash.warp`.
+- docker-dash creates or adopts `/zerotrust/routes/hostname` resources and removes only routes it created after the last owner disappears.
+- Configure `100.80.0.0/16` and `2606:4700:0cf1:4000::/64` in WARP Include-mode profiles. Do not add each application hostname to Split Tunnels.
+- Entries previously created through `docker.dash.warp.profiles` are removed during migration when the token still has permission to edit those profiles.
 
 ### Full Example with a Service
 
@@ -263,10 +269,10 @@ services:
       - "docker.dash.application.access.instantauth=true"
       - "docker.dash.application.access.icon=https://cdn.jsdelivr.net/gh/homarr-labs/dashboard-icons/png/ntfy.png"
 
-      # --- Warp Split Tunnel (Optional) ---
+      # --- WARP private hostname route (Optional) ---
       - "traefik.http.routers.ntfy.rule=Host(`ntfy.example.com`)"
       - "docker.dash.warp=true"
-      - "docker.dash.warp.profiles=DeviceProfileA,DeviceProfileB"
+      # Reuses docker.dash.tunnel=my-main-tunnel from Core Routing.
 ```
 
 ## Debugging
