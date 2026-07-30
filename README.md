@@ -76,6 +76,8 @@ services:
 |---|---|---|
 | `CF_API_TOKEN` | **Yes** | Your Cloudflare API Token with the required permissions. |
 | `CF_ACCOUNT_ID` | **Yes** | Your Cloudflare Account ID. |
+| `CF_API_TOKEN_FILE` | **No** | Path to a file containing the API token. Defaults to `/run/secrets/CF_API_TOKEN` when `CF_API_TOKEN` is unset. |
+| `CF_ACCOUNT_ID_FILE` | **No** | Path to a file containing the account ID. Defaults to `/run/secrets/CF_ACCOUNT_ID` when `CF_ACCOUNT_ID` is unset. |
 | `LOG_LEVEL` | **No** | Logging level. Defaults to `INFO`. |
 | `CACHE_REFRESH_INTERVAL` | **No** | How often (in seconds) to refresh the Cloudflare cache. Defaults to `300` (5 minutes). |
 | `RECONCILE_INTERVAL` | **No** | How often (in seconds) to reconcile local state with running containers. Set to `0` to disable. Defaults to `60`. |
@@ -83,6 +85,31 @@ services:
 | `DNS_HA_MODE` | **No** | Set to `true` to enable High Availability mode. When enabled, if a DNS record points to a different tunnel, it won't be updated (allows multiple tunnels to serve the same hostname). Defaults to `false`. |
 | `DOCKER_DASH_STATE_DB` | **No** | Path to the SQLite database used to persist docker-dash-managed tunnel, Access, and Warp ownership state. Defaults to `/tmp/docker-dash-state.db`. |
 | `WARP_STATE_DB` | **No** | Path to the SQLite database used to persist docker-dash-managed Warp split tunnel routes. Defaults to `/tmp/docker-dash-warp-state.db`. |
+
+### Docker Swarm Secrets
+
+Credentials can be supplied as Docker Swarm secrets instead of environment
+variables. The secret targets below use the default file names recognized by the
+application:
+
+```yaml
+services:
+  docker-dash:
+    image: amoisis/docker-dash:latest
+    secrets:
+      - CF_ACCOUNT_ID
+      - CF_API_TOKEN
+
+secrets:
+  CF_ACCOUNT_ID:
+    external: true
+  CF_API_TOKEN:
+    external: true
+```
+
+If your mounted secrets use different target names, set `CF_ACCOUNT_ID_FILE` and
+`CF_API_TOKEN_FILE` to their full paths. Direct `CF_ACCOUNT_ID` and `CF_API_TOKEN`
+environment values take precedence when both sources are present.
 
 ## High Availability (HA) Configuration
 

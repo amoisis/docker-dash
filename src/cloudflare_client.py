@@ -625,11 +625,30 @@ def validate_service_url(service: str) -> None:
         )
 
 
+def _read_credential(name):
+    """Read a credential from an environment variable or Docker secret file."""
+    value = os.environ.get(name)
+    if value:
+        return value
+
+    secret_path = os.environ.get(f"{name}_FILE", f"/run/secrets/{name}")
+    try:
+        with open(secret_path, "r", encoding="utf-8") as secret_file:
+            return secret_file.read().strip() or None
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        logging.error("Unable to read %s from secret file %s: %s", name, secret_path, error)
+        return None
+
+
 def get_cloudflare_client(manager=None):
     """
     Initializes and returns a Cloudflare API client and account ID.
 
-    Reads credentials (CF_API_TOKEN, CF_ACCOUNT_ID) from environment variables.
+    Reads credentials from environment variables or Docker secret files. Environment
+    variables take precedence. Secret file paths can be configured with
+    CF_API_TOKEN_FILE and CF_ACCOUNT_ID_FILE and default to /run/secrets/<name>.
 
     Args:
         manager: Optional CloudflareManager instance. Uses global if None.
@@ -641,12 +660,13 @@ def get_cloudflare_client(manager=None):
     if manager is None:
         manager = _manager
         
-    token = os.environ.get("CF_API_TOKEN")
-    account_id = os.environ.get("CF_ACCOUNT_ID")
+    token = _read_credential("CF_API_TOKEN")
+    account_id = _read_credential("CF_ACCOUNT_ID")
 
     if not token or not account_id:
         logging.error(
-            "Cloudflare credentials missing. Please set CF_API_TOKEN and CF_ACCOUNT_ID environment variables."
+            "Cloudflare credentials missing. Set CF_API_TOKEN and CF_ACCOUNT_ID "
+            "environment variables or provide Docker secret files."
         )
         return None, None
 
