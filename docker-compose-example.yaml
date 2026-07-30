@@ -7,6 +7,9 @@ docker-dash:
   environment:
     CF_ACCOUNT_ID: accountid
     CF_API_TOKEN: apitoken
+    # Docker Swarm alternative: remove the two values above and attach secrets
+    # targeting /run/secrets/CF_ACCOUNT_ID and /run/secrets/CF_API_TOKEN.
+    # For custom target paths, set CF_ACCOUNT_ID_FILE and CF_API_TOKEN_FILE.
     LOG_LEVEL: INFO
     # Persist docker-dash managed state across restarts
     # DOCKER_DASH_STATE_DB: /data/docker-dash-state.db
