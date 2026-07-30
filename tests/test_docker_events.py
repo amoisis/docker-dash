@@ -218,3 +218,83 @@ class TestDockerEventListener:
         mock_remove_access.assert_called_once_with("app.example.com")
         assert "c2e882d1d64729245b6f0a2bc88ea3ed84d542a0daa4c945d0fb18ef18577a3d" not in docker_client._container_status
         assert "c2e882d1d64729245b6f0a2bc88ea3ed84d542a0daa4c945d0fb18ef18577a3d" not in docker_client._last_processed_time
+
+    def test_swarm_old_task_does_not_remove_replacement_route(self, monkeypatch):
+        """A rolling-update stop event must preserve a route used by the new task."""
+        old_id = "old-swarm-task"
+        new_task = Mock()
+        new_task.id = "new-swarm-task"
+        new_task.labels = {
+            "docker.dash.enable": "true",
+            "docker.dash.tunnel": "test-tunnel",
+            "docker.dash.hostname": "app.example.com",
+            "docker.dash.service": "http://app:8080",
+            "com.docker.swarm.service.name": "stack_app",
+        }
+        mock_docker_client = MagicMock()
+        mock_docker_client.containers.list.return_value = [new_task]
+
+        monkeypatch.setattr(
+            docker_client,
+            '_container_ingress_state',
+            {old_id: ("test-tunnel", "app.example.com")},
+        )
+        monkeypatch.setattr(
+            docker_client,
+            '_container_status',
+            {old_id: {"name": "stack_app.1.old"}},
+        )
+        monkeypatch.setattr(docker_client, '_last_processed_time', {old_id: 123.0})
+
+        db = docker_client.get_container_state_db()
+        db.upsert_container_route(old_id, "test-tunnel", "app.example.com", "http://app:8080")
+        event = {
+            "Type": "container",
+            "Action": "die",
+            "Actor": {
+                "ID": old_id,
+                "Attributes": {
+                    "docker.dash.enable": "true",
+                    "docker.dash.tunnel": "test-tunnel",
+                    "docker.dash.hostname": "app.example.com",
+                    "com.docker.swarm.service.name": "stack_app",
+                },
+            },
+        }
+
+        with patch('docker_client.remove_ingress_rule') as mock_remove_ingress:
+            with patch('docker_client.remove_access_application') as mock_remove_access:
+                docker_client._handle_container_event(mock_docker_client, event)
+
+        mock_remove_ingress.assert_not_called()
+        mock_remove_access.assert_not_called()
+        # The stale row is intentionally left for periodic reconciliation. This
+        # also protects stop-first updates where the new task is not running yet.
+        assert db.get_container_route(old_id) is not None
+        assert old_id not in docker_client._container_ingress_state
+
+    def test_swarm_terminal_event_defers_warp_cleanup(self, monkeypatch):
+        """A stopped Swarm task keeps Warp ownership until reconciliation."""
+        old_id = "old-warp-task"
+        monkeypatch.setattr(docker_client, '_container_ingress_state', {})
+        monkeypatch.setattr(docker_client, '_container_status', {})
+        monkeypatch.setattr(docker_client, '_last_processed_time', {})
+        monkeypatch.setattr(docker_client, '_deferred_cleanup_ids', set())
+
+        event = {
+            "Type": "container",
+            "Action": "die",
+            "Actor": {
+                "ID": old_id,
+                "Attributes": {
+                    "docker.dash.warp": "true",
+                    "com.docker.swarm.service.id": "service-id",
+                },
+            },
+        }
+
+        with patch('docker_client._cleanup_warp_for_container') as mock_cleanup_warp:
+            docker_client._handle_container_event(MagicMock(), event)
+
+        mock_cleanup_warp.assert_not_called()
+        assert old_id in docker_client._deferred_cleanup_ids

@@ -22,6 +22,7 @@ _debounce_delay_seconds = 10
 
 # Container status tracking for diagnostics
 _container_status = {}
+_deferred_cleanup_ids = set()
 
 # Event listener control
 _event_stream = None
@@ -116,6 +117,111 @@ def _cleanup_container_resources(container_id, fallback_state=None, fallback_lab
             return bool(hostname and tunnel_name)
 
     return False
+
+
+def _container_desires_route(container, tunnel_name, hostname):
+    """Return whether a running container declares the same managed ingress route."""
+    labels = container.labels or {}
+    return (
+        labels.get("docker.dash.enable") == "true"
+        and labels.get("docker.dash.tunnel") == tunnel_name
+        and labels.get("docker.dash.hostname") == hostname
+        and bool(labels.get("docker.dash.service"))
+    )
+
+
+def _route_has_running_owner(docker_client, container_id, tunnel_name, hostname, running_containers=None):
+    """
+    Check whether another running container still owns a route.
+
+    Swarm replaces task containers during rolling updates. The old task's terminal
+    event must not remove a route already adopted by the replacement task.
+    """
+    try:
+        containers = running_containers
+        if containers is None:
+            containers = docker_client.containers.list()
+        return any(
+            container.id != container_id
+            and _container_desires_route(container, tunnel_name, hostname)
+            for container in containers
+        )
+    except (docker.errors.APIError, docker.errors.DockerException) as error:
+        logging.warning(
+            "Could not verify whether route %s on tunnel %s has another running owner: %s. "
+            "Preserving the route to avoid disrupting a Swarm replacement.",
+            hostname,
+            tunnel_name,
+            error,
+        )
+        return True
+
+
+def _cleanup_stopped_container_resources(
+    docker_client,
+    container_id,
+    *,
+    labels=None,
+    fallback_state=None,
+    running_containers=None,
+):
+    """Clean local state for a stopped container and remote state only when unowned."""
+    container_db = get_container_state_db()
+    managed_state = container_db.get_container_route(container_id)
+    is_swarm_task = bool(
+        labels
+        and (
+            labels.get("com.docker.swarm.service.id")
+            or labels.get("com.docker.swarm.service.name")
+        )
+    )
+
+    # Swarm's default update order is stop-first, so a replacement task may not
+    # be running yet when the old task emits its terminal event. Leave the
+    # persisted route for the periodic reconciler, which can make the decision
+    # after the update has had time to advance.
+    if is_swarm_task and managed_state and running_containers is None:
+        logging.info(
+            "Container %s is a stopped Swarm task; deferring remote route cleanup "
+            "to reconciliation.",
+            container_id[:12],
+        )
+        return False
+
+    route_state = fallback_state
+    if managed_state:
+        route_state = (managed_state["tunnel_name"], managed_state["hostname"])
+    elif not route_state and labels:
+        if labels.get("docker.dash.enable") == "true":
+            tunnel_name = labels.get("docker.dash.tunnel")
+            hostname = labels.get("docker.dash.hostname")
+            if tunnel_name and hostname:
+                route_state = (tunnel_name, hostname)
+
+    if route_state:
+        tunnel_name, hostname = route_state
+        if _route_has_running_owner(
+            docker_client,
+            container_id,
+            tunnel_name,
+            hostname,
+            running_containers=running_containers,
+        ):
+            logging.info(
+                "Container %s stopped, but route %s on tunnel %s is still owned by another "
+                "running container; preserving Cloudflare resources.",
+                container_id[:12],
+                hostname,
+                tunnel_name,
+            )
+            container_db.delete_container_route(container_id)
+            return False
+
+    return _cleanup_container_resources(
+        container_id,
+        fallback_state=fallback_state,
+        fallback_labels=labels,
+    )
 
 
 def _reconcile_container_warp_state(container_id, container_name, container_labels, dash_labels):
@@ -399,22 +505,38 @@ def _handle_container_event(docker_client, event):
     container_id = event.get("Actor", {}).get("ID") or event.get("id")
 
     def _cleanup_container_tracking(container_id, *, labels=None, fallback_state=None):
-        _cleanup_warp_for_container(container_id)
+        is_swarm_task = bool(
+            labels
+            and (
+                labels.get("com.docker.swarm.service.id")
+                or labels.get("com.docker.swarm.service.name")
+            )
+        )
+        if is_swarm_task:
+            # Swarm's default update order is stop-first. Keep the old task's
+            # Warp ownership until reconciliation has processed its replacement,
+            # otherwise the desired hostname can briefly disappear.
+            with _state_lock:
+                _deferred_cleanup_ids.add(container_id)
+        else:
+            _cleanup_warp_for_container(container_id)
         with _state_lock:
             if container_id in _container_ingress_state:
                 old_tunnel, old_hostname = _container_ingress_state.pop(container_id)
                 logging.info(
-                    f"Container {container_id[:12]} stopped. Removing ingress rule: {old_hostname} from {old_tunnel}"
+                    f"Container {container_id[:12]} stopped. Reconciling ingress rule: {old_hostname} from {old_tunnel}"
                 )
-                _cleanup_container_resources(container_id, fallback_state=(old_tunnel, old_hostname))
+                cleanup_state = (old_tunnel, old_hostname)
             else:
-                _cleanup_container_resources(
-                    container_id,
-                    fallback_state=fallback_state,
-                    fallback_labels=labels,
-                )
+                cleanup_state = fallback_state
             _container_status.pop(container_id, None)
             _last_processed_time.pop(container_id, None)
+        _cleanup_stopped_container_resources(
+            docker_client,
+            container_id,
+            labels=labels,
+            fallback_state=cleanup_state,
+        )
 
     if action == "start":
         if not container_id:
@@ -433,11 +555,7 @@ def _handle_container_event(docker_client, event):
             logging.warning(f"Received {action} event with no container ID. Event: {event}")
             return
         attributes = event.get("Actor", {}).get("Attributes", {})
-        label_prefix = "docker.dash."
-        dash_labels = {
-            k: v for k, v in attributes.items() if k.startswith(label_prefix)
-        }
-        _cleanup_container_tracking(container_id, labels=dash_labels)
+        _cleanup_container_tracking(container_id, labels=attributes)
 
 
 def _reconcile_loop(docker_client):
@@ -458,7 +576,10 @@ def _reconcile_loop(docker_client):
             running_containers = docker_client.containers.list()
             running_ids = {c.id for c in running_containers}
             with _state_lock:
-                tracked_ids = set(_container_ingress_state.keys())
+                # Status includes active, disabled, and misconfigured containers. Using
+                # only ingress state made every unlabeled Swarm task look untracked on
+                # every reconciliation pass.
+                tracked_ids = set(_container_status.keys()) | set(_container_ingress_state.keys())
 
             # Process any running containers we may have missed
             for container in running_containers:
@@ -469,12 +590,21 @@ def _reconcile_loop(docker_client):
             # Remove ingress rules for tracked containers that are no longer running
             container_db = get_container_state_db()
             db_tracked_ids = {row["container_id"] for row in container_db.list_container_routes()}
-            for missing_id in (tracked_ids | db_tracked_ids) - running_ids:
+            with _state_lock:
+                deferred_cleanup_ids = set(_deferred_cleanup_ids)
+            for missing_id in (tracked_ids | db_tracked_ids | deferred_cleanup_ids) - running_ids:
                 _cleanup_warp_for_container(missing_id)
                 with _state_lock:
                     old_state = _container_ingress_state.pop(missing_id, None)
                     _container_status.pop(missing_id, None)
-                _cleanup_container_resources(missing_id, fallback_state=old_state)
+                    _last_processed_time.pop(missing_id, None)
+                    _deferred_cleanup_ids.discard(missing_id)
+                _cleanup_stopped_container_resources(
+                    docker_client,
+                    missing_id,
+                    fallback_state=old_state,
+                    running_containers=running_containers,
+                )
         except docker.errors.APIError as e:
             logging.error(f"Docker API error during reconciliation: {e}")
         except Exception as e:
@@ -532,21 +662,27 @@ def start_event_listener():
     _docker_client = docker_client
     _listener_stop_event.clear()
 
-    # Clean up any managed tunnel/access resources whose containers are no longer running.
+    # Process running containers before stale ownership. During a Swarm rolling
+    # update the persisted rows may reference old task IDs, while replacement
+    # tasks already own the same desired routes under new IDs.
     try:
-        running_container_ids = {container.id for container in docker_client.containers.list()}
+        running_containers = docker_client.containers.list()
+        running_container_ids = {container.id for container in running_containers}
+        logging.info("Scanning for existing containers...")
+        for container in running_containers:
+            process_container(container)
+
         container_db = get_container_state_db()
         for record in container_db.list_container_routes():
             if record["container_id"] not in running_container_ids:
                 _cleanup_warp_for_container(record["container_id"])
-                _cleanup_container_resources(record["container_id"])
+                _cleanup_stopped_container_resources(
+                    docker_client,
+                    record["container_id"],
+                    running_containers=running_containers,
+                )
     except Exception as e:
         logging.warning(f"Initial managed resource reconciliation skipped due to error: {e}")
-
-    # 1. Process already running containers
-    logging.info("Scanning for existing containers...")
-    for container in docker_client.containers.list():
-        process_container(container)
 
     # 2. Start reconciliation thread
     _reconcile_thread = threading.Thread(target=_reconcile_loop, args=(docker_client,), name="ReconcileThread", daemon=True)

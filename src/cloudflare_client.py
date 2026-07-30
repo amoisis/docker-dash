@@ -166,39 +166,121 @@ class ContainerStateDB:
                     tunnel_name TEXT NOT NULL,
                     hostname TEXT NOT NULL,
                     service TEXT,
+                    access_desired INTEGER NOT NULL DEFAULT 0,
+                    lifecycle_state TEXT NOT NULL DEFAULT 'active',
                     updated_at TEXT NOT NULL
                 )
                 """
             )
+            columns = {
+                row[1] for row in conn.execute(
+                    "PRAGMA table_info(managed_container_routes)"
+                ).fetchall()
+            }
+            if "access_desired" not in columns:
+                conn.execute(
+                    """
+                    ALTER TABLE managed_container_routes
+                    ADD COLUMN access_desired INTEGER NOT NULL DEFAULT 0
+                    """
+                )
+            if "lifecycle_state" not in columns:
+                conn.execute(
+                    """
+                    ALTER TABLE managed_container_routes
+                    ADD COLUMN lifecycle_state TEXT NOT NULL DEFAULT 'active'
+                    """
+                )
             conn.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_managed_container_hostname
                 ON managed_container_routes(hostname)
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS managed_cloudflare_resources (
+                    resource_key TEXT PRIMARY KEY,
+                    resource_type TEXT NOT NULL,
+                    tunnel_name TEXT,
+                    hostname TEXT NOT NULL,
+                    remote_id TEXT,
+                    ownership TEXT NOT NULL,
+                    original_state_json TEXT,
+                    state TEXT NOT NULL DEFAULT 'active',
+                    updated_at TEXT NOT NULL,
+                    CHECK (ownership IN ('created', 'adopted', 'legacy_unknown')),
+                    CHECK (state IN ('active', 'cleanup_pending', 'cleanup_failed'))
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_managed_resource_identity
+                ON managed_cloudflare_resources(resource_type, IFNULL(tunnel_name, ''), hostname)
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS cloudflare_cleanup_jobs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    resource_key TEXT NOT NULL UNIQUE,
+                    action TEXT NOT NULL,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    next_attempt_at TEXT NOT NULL,
+                    last_error TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(resource_key)
+                        REFERENCES managed_cloudflare_resources(resource_key)
+                        ON DELETE CASCADE
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_cleanup_jobs_due
+                ON cloudflare_cleanup_jobs(next_attempt_at)
+                """
+            )
 
-    def upsert_container_route(self, container_id, tunnel_name, hostname, service=None):
+    def upsert_container_route(
+        self, container_id, tunnel_name, hostname, service=None, access_desired=False
+    ):
         now = datetime.now(timezone.utc).isoformat()
         with self._lock, self._connect() as conn:
             conn.execute(
                 """
-                INSERT INTO managed_container_routes (container_id, tunnel_name, hostname, service, updated_at)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO managed_container_routes (
+                    container_id, tunnel_name, hostname, service,
+                    access_desired, lifecycle_state, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, 'active', ?)
                 ON CONFLICT(container_id)
                 DO UPDATE SET
                     tunnel_name = excluded.tunnel_name,
                     hostname = excluded.hostname,
                     service = excluded.service,
+                    access_desired = excluded.access_desired,
+                    lifecycle_state = 'active',
                     updated_at = excluded.updated_at
                 """,
-                (container_id, tunnel_name, hostname, service, now),
+                (
+                    container_id,
+                    tunnel_name,
+                    hostname,
+                    service,
+                    int(bool(access_desired)),
+                    now,
+                ),
             )
 
     def get_container_route(self, container_id):
         with self._lock, self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT tunnel_name, hostname, service, updated_at
+                SELECT tunnel_name, hostname, service, access_desired,
+                       lifecycle_state, updated_at
                 FROM managed_container_routes
                 WHERE container_id = ?
                 """,
@@ -211,8 +293,52 @@ class ContainerStateDB:
             "tunnel_name": row[0],
             "hostname": row[1],
             "service": row[2],
-            "updated_at": row[3],
+            "access_desired": bool(row[3]),
+            "lifecycle_state": row[4],
+            "updated_at": row[5],
         }
+
+    def retire_container_route(self, container_id):
+        now = datetime.now(timezone.utc).isoformat()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE managed_container_routes
+                SET lifecycle_state = 'retired', updated_at = ?
+                WHERE container_id = ?
+                """,
+                (now, container_id),
+            )
+        return self.get_container_route(container_id)
+
+    def count_active_route_claims(
+        self, tunnel_name, hostname, exclude_container_id=None
+    ):
+        query = """
+            SELECT COUNT(*)
+            FROM managed_container_routes
+            WHERE tunnel_name = ? AND hostname = ? AND lifecycle_state = 'active'
+        """
+        params = [tunnel_name, hostname]
+        if exclude_container_id is not None:
+            query += " AND container_id != ?"
+            params.append(exclude_container_id)
+        with self._lock, self._connect() as conn:
+            return conn.execute(query, params).fetchone()[0]
+
+    def count_active_access_claims(self, hostname, exclude_container_id=None):
+        query = """
+            SELECT COUNT(*)
+            FROM managed_container_routes
+            WHERE hostname = ? AND access_desired = 1
+              AND lifecycle_state = 'active'
+        """
+        params = [hostname]
+        if exclude_container_id is not None:
+            query += " AND container_id != ?"
+            params.append(exclude_container_id)
+        with self._lock, self._connect() as conn:
+            return conn.execute(query, params).fetchone()[0]
 
     def delete_container_route(self, container_id):
         managed_route = self.get_container_route(container_id)
@@ -230,7 +356,8 @@ class ContainerStateDB:
         with self._lock, self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT container_id, tunnel_name, hostname, service, updated_at
+                SELECT container_id, tunnel_name, hostname, service,
+                       access_desired, lifecycle_state, updated_at
                 FROM managed_container_routes
                 ORDER BY updated_at ASC
                 """
@@ -241,10 +368,191 @@ class ContainerStateDB:
                 "tunnel_name": row[1],
                 "hostname": row[2],
                 "service": row[3],
-                "updated_at": row[4],
+                "access_desired": bool(row[4]),
+                "lifecycle_state": row[5],
+                "updated_at": row[6],
             }
             for row in rows
         ]
+
+    def upsert_resource(
+        self,
+        resource_key,
+        resource_type,
+        hostname,
+        tunnel_name=None,
+        remote_id=None,
+        ownership="legacy_unknown",
+        original_state_json=None,
+        state="active",
+    ):
+        now = datetime.now(timezone.utc).isoformat()
+        if original_state_json is not None and not isinstance(original_state_json, str):
+            original_state_json = json.dumps(original_state_json, sort_keys=True)
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO managed_cloudflare_resources (
+                    resource_key, resource_type, tunnel_name, hostname, remote_id,
+                    ownership, original_state_json, state, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(resource_key)
+                DO UPDATE SET
+                    resource_type = excluded.resource_type,
+                    tunnel_name = excluded.tunnel_name,
+                    hostname = excluded.hostname,
+                    remote_id = excluded.remote_id,
+                    ownership = excluded.ownership,
+                    original_state_json = excluded.original_state_json,
+                    state = excluded.state,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    resource_key, resource_type, tunnel_name, hostname, remote_id,
+                    ownership, original_state_json, state, now,
+                ),
+            )
+        return self.get_resource(resource_key)
+
+    def get_resource(self, resource_key):
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT resource_type, tunnel_name, hostname, remote_id, ownership,
+                       original_state_json, state, updated_at
+                FROM managed_cloudflare_resources
+                WHERE resource_key = ?
+                """,
+                (resource_key,),
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "resource_key": resource_key,
+            "resource_type": row[0],
+            "tunnel_name": row[1],
+            "hostname": row[2],
+            "remote_id": row[3],
+            "ownership": row[4],
+            "original_state_json": row[5],
+            "state": row[6],
+            "updated_at": row[7],
+        }
+
+    def mark_resource_cleanup_pending(self, resource_key, action):
+        now = datetime.now(timezone.utc).isoformat()
+        with self._lock, self._connect() as conn:
+            updated = conn.execute(
+                """
+                UPDATE managed_cloudflare_resources
+                SET state = 'cleanup_pending', updated_at = ?
+                WHERE resource_key = ?
+                """,
+                (now, resource_key),
+            )
+            if updated.rowcount == 0:
+                raise KeyError(f"Unknown managed resource: {resource_key}")
+            conn.execute(
+                """
+                INSERT INTO cloudflare_cleanup_jobs (
+                    resource_key, action, attempts, next_attempt_at,
+                    last_error, created_at, updated_at
+                )
+                VALUES (?, ?, 0, ?, NULL, ?, ?)
+                ON CONFLICT(resource_key)
+                DO UPDATE SET
+                    action = excluded.action,
+                    next_attempt_at = excluded.next_attempt_at,
+                    last_error = NULL,
+                    updated_at = excluded.updated_at
+                """,
+                (resource_key, action, now, now, now),
+            )
+
+    def record_cleanup_failure(self, resource_key, error, next_attempt_at):
+        if isinstance(next_attempt_at, datetime):
+            next_attempt_at = next_attempt_at.isoformat()
+        now = datetime.now(timezone.utc).isoformat()
+        with self._lock, self._connect() as conn:
+            updated = conn.execute(
+                """
+                UPDATE cloudflare_cleanup_jobs
+                SET attempts = attempts + 1, next_attempt_at = ?,
+                    last_error = ?, updated_at = ?
+                WHERE resource_key = ?
+                """,
+                (next_attempt_at, str(error), now, resource_key),
+            )
+            if updated.rowcount == 0:
+                raise KeyError(f"No cleanup job for resource: {resource_key}")
+            conn.execute(
+                """
+                UPDATE managed_cloudflare_resources
+                SET state = 'cleanup_failed', updated_at = ?
+                WHERE resource_key = ?
+                """,
+                (now, resource_key),
+            )
+
+    def complete_cleanup(self, resource_key):
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "DELETE FROM cloudflare_cleanup_jobs WHERE resource_key = ?",
+                (resource_key,),
+            )
+            conn.execute(
+                "DELETE FROM managed_cloudflare_resources WHERE resource_key = ?",
+                (resource_key,),
+            )
+
+    def list_due_cleanup_jobs(self, now=None):
+        now = now or datetime.now(timezone.utc)
+        if isinstance(now, datetime):
+            now = now.isoformat()
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT j.id, j.resource_key, j.action, j.attempts,
+                       j.next_attempt_at, j.last_error, j.created_at, j.updated_at,
+                       r.resource_type, r.tunnel_name, r.hostname, r.remote_id,
+                       r.ownership, r.original_state_json, r.state
+                FROM cloudflare_cleanup_jobs AS j
+                JOIN managed_cloudflare_resources AS r
+                  ON r.resource_key = j.resource_key
+                WHERE j.next_attempt_at <= ?
+                ORDER BY j.next_attempt_at ASC, j.id ASC
+                """,
+                (now,),
+            ).fetchall()
+        keys = (
+            "id", "resource_key", "action", "attempts", "next_attempt_at",
+            "last_error", "created_at", "updated_at", "resource_type",
+            "tunnel_name", "hostname", "remote_id", "ownership",
+            "original_state_json", "resource_state",
+        )
+        return [dict(zip(keys, row)) for row in rows]
+
+    def delete_retired_claims_without_jobs(self):
+        with self._lock, self._connect() as conn:
+            result = conn.execute(
+                """
+                DELETE FROM managed_container_routes
+                WHERE lifecycle_state = 'retired'
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM managed_cloudflare_resources AS r
+                      JOIN cloudflare_cleanup_jobs AS j
+                        ON j.resource_key = r.resource_key
+                      WHERE r.hostname = managed_container_routes.hostname
+                        AND (
+                            r.tunnel_name IS NULL
+                            OR r.tunnel_name = managed_container_routes.tunnel_name
+                        )
+                  )
+                """
+            )
+        return result.rowcount
 
 
 def get_warp_state_db():
