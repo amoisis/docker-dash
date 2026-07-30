@@ -81,6 +81,7 @@ services:
 | `LOG_LEVEL` | **No** | Logging level. Defaults to `INFO`. |
 | `CACHE_REFRESH_INTERVAL` | **No** | How often (in seconds) to refresh the Cloudflare cache. Defaults to `300` (5 minutes). |
 | `RECONCILE_INTERVAL` | **No** | How often (in seconds) to reconcile local state with running containers. Set to `0` to disable. Defaults to `60`. |
+| `SWARM_DISCOVERY_MODE` | **No** | `containers` (default) preserves local Docker discovery. `manager` discovers Swarm services across all nodes and requires Docker Dash on a manager. `auto` selects manager discovery only when the connected daemon is a manager. |
 | `MANAGE_DNS_RECORDS` | **No** | Set to `false` to disable automatic DNS record creation/updates. Defaults to `true`. |
 | `DNS_HA_MODE` | **No** | Set to `true` to enable High Availability mode. When enabled, if a DNS record points to a different tunnel, it won't be updated (allows multiple tunnels to serve the same hostname). Defaults to `false`. |
 | `DOCKER_DASH_STATE_DB` | **No** | Path to the SQLite database used to persist docker-dash-managed tunnel, Access, and Warp ownership state. Defaults to `/tmp/docker-dash-state.db`. |
@@ -110,6 +111,30 @@ secrets:
 If your mounted secrets use different target names, set `CF_ACCOUNT_ID_FILE` and
 `CF_API_TOKEN_FILE` to their full paths. Direct `CF_ACCOUNT_ID` and `CF_API_TOKEN`
 environment values take precedence when both sources are present.
+
+### Docker Swarm service discovery
+
+For multi-node Swarm deployments, run Docker Dash on a manager and set
+`SWARM_DISCOVERY_MODE=manager`. Routes are owned by the stable Swarm service ID,
+so rolling task replacements and scale-to-zero do not remove desired routes.
+Local task containers are ignored in this mode to avoid duplicate ownership.
+Standalone containers on the manager are still discovered.
+
+Docker Dash merges both Swarm label locations. Labels under the service's
+top-level `labels:` take precedence over matching `deploy.labels:` values. Using
+top-level labels is recommended because Traefik and Docker Dash then observe the
+same task configuration.
+
+```yaml
+services:
+  docker-dash:
+    environment:
+      SWARM_DISCOVERY_MODE: manager
+    deploy:
+      placement:
+        constraints:
+          - node.role == manager
+```
 
 ## High Availability (HA) Configuration
 

@@ -38,6 +38,8 @@ def test_migrates_legacy_routes_idempotently_with_safe_defaults(tmp_path):
 
     assert db.get_container_route("old") == {
         "container_id": "old",
+        "owner_id": "old",
+        "owner_kind": "container",
         "tunnel_name": "tunnel",
         "hostname": "app.example.com",
         "service": "http://old",
@@ -188,6 +190,35 @@ def test_mark_pending_is_idempotent_and_preserves_attempt_count(state_db):
 def test_unknown_cleanup_operations_fail_explicitly(state_db):
     with pytest.raises(KeyError):
         state_db.mark_resource_cleanup_pending("missing", "remove")
+
+
+def test_owner_claim_aliases_and_hostname_claim_count(state_db):
+    state_db.upsert_route_claim(
+        "swarm-service:one",
+        "swarm_service",
+        "tunnel-a",
+        "shared.example.com",
+    )
+    state_db.upsert_route_claim(
+        "swarm-service:two",
+        "swarm_service",
+        "tunnel-b",
+        "shared.example.com",
+    )
+
+    claim = state_db.get_route_claim("swarm-service:one")
+    assert claim["owner_id"] == "swarm-service:one"
+    assert claim["owner_kind"] == "swarm_service"
+    assert state_db.count_active_hostname_claims("shared.example.com") == 2
+    assert (
+        state_db.count_active_hostname_claims(
+            "shared.example.com", exclude_owner_id="swarm-service:one"
+        )
+        == 1
+    )
+
+    state_db.retire_route_claim("swarm-service:one")
+    assert state_db.count_active_hostname_claims("shared.example.com") == 1
     with pytest.raises(KeyError):
         state_db.record_cleanup_failure("missing", "error", "later")
 
@@ -225,3 +256,112 @@ def test_existing_delete_and_list_apis_include_new_claim_fields(state_db):
     deleted = state_db.delete_container_route("one")
     assert deleted["container_id"] == "one"
     assert state_db.list_container_routes() == []
+
+
+def test_canonical_resource_key_helpers():
+    assert (
+        ContainerStateDB.resource_key(
+            "ingress", "app.example.com", tunnel_name="main"
+        )
+        == "ingress:main:app.example.com"
+    )
+    assert (
+        ContainerStateDB.resource_key("dns", "app.example.com")
+        == "dns:app.example.com"
+    )
+    assert (
+        ContainerStateDB.resource_key("access", "app.example.com")
+        == "access:app.example.com"
+    )
+    with pytest.raises(ValueError):
+        ContainerStateDB.resource_key("ingress", "app.example.com")
+    with pytest.raises(ValueError):
+        ContainerStateDB.resource_key("unknown", "app.example.com")
+
+
+def test_cancel_cleanup_is_atomic_and_idempotent(state_db):
+    key = "dns:app.example.com"
+    state_db.upsert_resource(key, "dns", "app.example.com", ownership="created")
+    state_db.mark_resource_cleanup_pending(key, "remove_cname")
+
+    assert state_db.cancel_cleanup(key) is True
+    assert state_db.get_resource(key)["state"] == "active"
+    assert state_db.list_due_cleanup_jobs(
+        datetime.now(timezone.utc) + timedelta(days=1)
+    ) == []
+    assert state_db.cancel_cleanup(key) is True
+    assert state_db.cancel_cleanup("missing") is False
+
+
+def test_reactivating_resource_removes_stale_cleanup_job(state_db):
+    key = "dns:app.example.com"
+    state_db.upsert_resource(key, "dns", "app.example.com", ownership="created")
+    state_db.mark_resource_cleanup_pending(key, "remove_cname")
+
+    state_db.upsert_resource(
+        key,
+        "dns",
+        "app.example.com",
+        remote_id="current",
+        ownership="created",
+        state="active",
+    )
+
+    assert state_db.get_resource(key)["state"] == "active"
+    assert state_db.list_due_cleanup_jobs(
+        datetime.now(timezone.utc) + timedelta(days=1)
+    ) == []
+
+
+def test_foreign_keys_are_enabled_and_cleanup_jobs_cascade(state_db):
+    key = "dns:app.example.com"
+    state_db.upsert_resource(key, "dns", "app.example.com")
+    state_db.mark_resource_cleanup_pending(key, "remove_cname")
+
+    with state_db._connect() as conn:
+        assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+        conn.execute(
+            "DELETE FROM managed_cloudflare_resources WHERE resource_key = ?",
+            (key,),
+        )
+        jobs = conn.execute(
+            "SELECT COUNT(*) FROM cloudflare_cleanup_jobs WHERE resource_key = ?",
+            (key,),
+        ).fetchone()[0]
+    assert jobs == 0
+
+
+def test_lifecycle_triggers_protect_fresh_and_migrated_tables(state_db):
+    state_db.upsert_container_route("one", "tunnel", "app.example.com")
+    with state_db._connect() as conn:
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                """
+                UPDATE managed_container_routes
+                SET lifecycle_state = 'invalid'
+                WHERE container_id = 'one'
+                """
+            )
+
+
+def test_resource_and_action_validation(state_db):
+    with pytest.raises(ValueError):
+        state_db.upsert_resource(
+            "dns:app.example.com",
+            "dns",
+            "app.example.com",
+            ownership="unowned",
+        )
+    with pytest.raises(ValueError):
+        state_db.upsert_resource(
+            "dns:app.example.com",
+            "dns",
+            "app.example.com",
+            state="unknown",
+        )
+
+    state_db.upsert_resource(
+        "dns:app.example.com", "dns", "app.example.com"
+    )
+    with pytest.raises(ValueError):
+        state_db.mark_resource_cleanup_pending("dns:app.example.com", "")

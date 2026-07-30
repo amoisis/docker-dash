@@ -42,13 +42,17 @@ class TestIngressRuleManagement:
         
         # Execute
         new_rule = {"hostname": "app.example.com", "service": "http://app:8080"}
-        cloudflare_client.add_or_update_ingress_rule("test-tunnel", new_rule)
+        result = cloudflare_client.add_or_update_ingress_rule("test-tunnel", new_rule)
         
         # Verify tunnel update was called
         assert mock_cloudflare_client.zero_trust.tunnels.cloudflared.configurations.update.called
         
         # Verify cache was updated
         assert len(cloudflare_client._manager.tunnel_cache[mock_tunnel.id]["connections"]) == 2
+        assert result.outcome == "created"
+        assert result.ownership == "created"
+        assert result.results["dns"].outcome == "created"
+        assert result.results["dns"].ownership == "created"
     
     def test_update_existing_ingress_rule(self, reset_cloudflare_state, mock_cloudflare_client, mock_tunnel):
         """Test updating an existing ingress rule (same hostname, different service)."""
@@ -88,10 +92,13 @@ class TestIngressRuleManagement:
         
         # Execute - update with new service URL
         new_rule = {"hostname": "app.example.com", "service": "http://new-service:9090"}
-        cloudflare_client.add_or_update_ingress_rule("test-tunnel", new_rule)
+        result = cloudflare_client.add_or_update_ingress_rule("test-tunnel", new_rule)
         
         # Verify update was called
         assert mock_cloudflare_client.zero_trust.tunnels.cloudflared.configurations.update.called
+        assert result.outcome == "updated"
+        assert result.ownership == "adopted"
+        assert result.original_state["service"] == "http://old-service:8080"
     
     def test_remove_ingress_rule(self, reset_cloudflare_state, mock_cloudflare_client, mock_tunnel):
         """Test removing an ingress rule from a tunnel."""
@@ -129,16 +136,18 @@ class TestIngressRuleManagement:
         cloudflare_client._manager.zones_cache["example.com"] = zone
         
         # Execute
-        cloudflare_client.remove_ingress_rule("test-tunnel", "app.example.com")
+        result = cloudflare_client.remove_ingress_rule("test-tunnel", "app.example.com")
         
         # Verify tunnel update was called
         assert mock_cloudflare_client.zero_trust.tunnels.cloudflared.configurations.update.called
         
-        # Verify DNS record was deleted
-        assert mock_cloudflare_client.dns.records.delete.called
+        # DNS cleanup is independent from the tunnel mutation.
+        assert not mock_cloudflare_client.dns.records.delete.called
         
         # Verify cache was updated
         assert len(cloudflare_client._manager.tunnel_cache[mock_tunnel.id]["connections"]) == 0
+        assert result.success is True
+        assert result.outcome == "removed"
     
     def test_ingress_rule_not_found(self, reset_cloudflare_state, mock_cloudflare_client, mock_tunnel):
         """Test removing a non-existent ingress rule."""
@@ -152,10 +161,53 @@ class TestIngressRuleManagement:
         }
         
         # Execute - should handle gracefully
-        cloudflare_client.remove_ingress_rule("test-tunnel", "nonexistent.example.com")
+        result = cloudflare_client.remove_ingress_rule("test-tunnel", "nonexistent.example.com")
         
         # Verify no API calls were made
         assert not mock_cloudflare_client.zero_trust.tunnels.cloudflared.configurations.update.called
+        assert result.success is False
+        assert result.outcome == "unknown"
+        assert result.confirmed_absent is False
+
+    def test_remove_ingress_does_not_attempt_dns_cleanup(
+        self, reset_cloudflare_state, mock_cloudflare_client, mock_tunnel
+    ):
+        rule = Mock()
+        rule.hostname = "app.example.com"
+        rule.dict = lambda: {"hostname": "app.example.com", "service": "http://app:8080"}
+        cloudflare_client._manager.cf_client = mock_cloudflare_client
+        cloudflare_client._manager.account_id = "test-account"
+        cloudflare_client._manager.tunnel_cache[mock_tunnel.id] = {
+            "tunnel_object": mock_tunnel,
+            "connections": [rule],
+        }
+        response = Mock()
+        response.config = Mock()
+        response.config.ingress = []
+        mock_cloudflare_client.zero_trust.tunnels.cloudflared.configurations.update.return_value = response
+
+        with patch("cloudflare_client.remove_cname_record") as remove_dns:
+            result = cloudflare_client.remove_ingress_rule(
+                "test-tunnel", "app.example.com"
+            )
+
+        assert result.success is True
+        assert result.outcome == "removed"
+        remove_dns.assert_not_called()
+
+    def test_remove_cname_confirms_absence_after_remote_lookup(
+        self, reset_cloudflare_state, mock_cloudflare_client
+    ):
+        zone = Mock(id="zone-123")
+        cloudflare_client._manager.cf_client = mock_cloudflare_client
+        cloudflare_client._manager.zones_cache["example.com"] = zone
+        mock_cloudflare_client.dns.records.list.return_value = []
+
+        result = cloudflare_client.remove_cname_record("app.example.com")
+
+        assert result.success is True
+        assert result.confirmed_absent is True
+        assert result.outcome == "absent"
     
     def test_tunnel_not_found(self, reset_cloudflare_state, mock_cloudflare_client):
         """Test adding rule to non-existent tunnel."""

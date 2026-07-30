@@ -172,8 +172,10 @@ class TestDockerReconciliation:
                 docker_client._listener_stop_event.set()
                 reconcile_thread.join(timeout=2)
 
-                mock_remove_ingress.assert_called_once_with("test-tunnel", "app.example.com")
-                mock_remove_access.assert_called_once_with("app.example.com")
+                # Stale legacy state is retired locally but cannot establish
+                # ownership of the remote Cloudflare resources.
+                mock_remove_ingress.assert_not_called()
+                mock_remove_access.assert_not_called()
 
     def test_startup_processes_replacement_before_stale_cleanup(self, monkeypatch):
         """Startup establishes replacement ownership before pruning old task IDs."""
