@@ -47,13 +47,17 @@ class TestAccessApplicationManagement:
             "policy": "Allow-Admins,Require-MFA",
             "loginmethods": "AzureAD"
         }
-        cloudflare_client.add_or_update_access_application("app.example.com", access_config)
+        result = cloudflare_client.add_or_update_access_application("app.example.com", access_config)
         
         # Verify create was called
         assert mock_cloudflare_client.zero_trust.access.applications.create.called
         
         # Verify the created application was cached under its exact hostname
         assert cloudflare_client._manager.access_apps_cache["app.example.com"] is created_app
+        assert result.success is True
+        assert result.outcome == "created"
+        assert result.ownership == "created"
+        assert result.remote_id == "app-new"
     
     def test_update_existing_access_application(self, reset_cloudflare_state, mock_cloudflare_client):
         """Test updating an existing Access Application."""
@@ -81,11 +85,15 @@ class TestAccessApplicationManagement:
         
         # Execute
         access_config = {"policy": "Allow-All"}
-        cloudflare_client.add_or_update_access_application("app.example.com", access_config)
+        result = cloudflare_client.add_or_update_access_application("app.example.com", access_config)
         
         # Verify update was called (not create)
         assert mock_cloudflare_client.zero_trust.access.applications.update.called
         assert not mock_cloudflare_client.zero_trust.access.applications.create.called
+        assert result.success is True
+        assert result.outcome == "updated"
+        assert result.ownership == "adopted"
+        assert result.restorable is False
     
     def test_access_application_with_instant_auth(self, reset_cloudflare_state, mock_cloudflare_client):
         """Test instant auth is enabled with single IdP."""
@@ -208,13 +216,16 @@ class TestAccessApplicationManagement:
         mock_cloudflare_client.zero_trust.access.applications.delete.return_value = Mock()
         
         # Execute
-        cloudflare_client.remove_access_application("app.example.com")
+        result = cloudflare_client.remove_access_application("app.example.com")
         
         # Verify delete was called
         assert mock_cloudflare_client.zero_trust.access.applications.delete.called
         
         # Verify cache was cleared
         assert "app.example.com" not in cloudflare_client._manager.access_apps_cache
+        assert result.success is True
+        assert result.outcome == "removed"
+        assert result.remote_id == "app-to-delete"
     
     def test_remove_nonexistent_access_application(self, reset_cloudflare_state, mock_cloudflare_client):
         """Test removing application that doesn't exist."""
@@ -224,7 +235,28 @@ class TestAccessApplicationManagement:
         cloudflare_client._manager.access_apps_cache = {}
         
         # Execute - should handle gracefully
-        cloudflare_client.remove_access_application("nonexistent.example.com")
+        result = cloudflare_client.remove_access_application("nonexistent.example.com")
         
         # Verify no API calls were made
         assert not mock_cloudflare_client.zero_trust.access.applications.delete.called
+        assert result.success is False
+        assert result.outcome == "unknown"
+        assert result.confirmed_absent is False
+
+    def test_remove_access_preserves_replacement_with_different_id(
+        self, reset_cloudflare_state, mock_cloudflare_client
+    ):
+        cloudflare_client._manager.cf_client = mock_cloudflare_client
+        cloudflare_client._manager.account_id = "test-account"
+        replacement = Mock(id="app-replacement", domain="app.example.com")
+        cloudflare_client._manager.access_apps_cache = {
+            "app.example.com": replacement
+        }
+
+        result = cloudflare_client.remove_access_application(
+            "app.example.com", remote_id="app-original"
+        )
+
+        assert result.success is False
+        assert result.outcome == "ownership_changed"
+        mock_cloudflare_client.zero_trust.access.applications.delete.assert_not_called()

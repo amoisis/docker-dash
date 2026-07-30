@@ -234,3 +234,43 @@ class TestDNSRecordManagement:
         cloudflare_client.remove_cname_record("app.example.com")
 
         assert mock_cloudflare_client.dns.records.delete.call_count == 2
+
+    def test_remove_managed_dns_id_preserves_other_records(
+        self, reset_cloudflare_state, mock_cloudflare_client
+    ):
+        cloudflare_client._manager.cf_client = mock_cloudflare_client
+        zone = Mock(id="zone-123", name="example.com")
+        cloudflare_client._manager.zones_cache = {"example.com": zone}
+
+        managed = Mock(id="dns-managed", type="CNAME")
+        unrelated = Mock(id="dns-manual", type="CNAME")
+        mock_cloudflare_client.dns.records.list.return_value = [
+            managed,
+            unrelated,
+        ]
+
+        result = cloudflare_client.remove_cname_record(
+            "app.example.com", remote_id="dns-managed"
+        )
+
+        assert result.success is True
+        mock_cloudflare_client.dns.records.delete.assert_called_once_with(
+            zone_id="zone-123", dns_record_id="dns-managed"
+        )
+
+    def test_replaced_managed_dns_id_is_preserved(
+        self, reset_cloudflare_state, mock_cloudflare_client
+    ):
+        cloudflare_client._manager.cf_client = mock_cloudflare_client
+        zone = Mock(id="zone-123", name="example.com")
+        cloudflare_client._manager.zones_cache = {"example.com": zone}
+        mock_cloudflare_client.dns.records.list.return_value = [
+            Mock(id="dns-replacement", type="CNAME")
+        ]
+
+        result = cloudflare_client.remove_cname_record(
+            "app.example.com", remote_id="dns-original"
+        )
+
+        assert result.confirmed_absent is True
+        mock_cloudflare_client.dns.records.delete.assert_not_called()

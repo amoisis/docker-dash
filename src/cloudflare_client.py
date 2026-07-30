@@ -6,6 +6,7 @@ import re
 import sqlite3
 import time
 import threading
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pprint import pformat
 from functools import wraps
@@ -51,6 +52,44 @@ WARP_MANAGED_DESCRIPTION = "managed-by-docker-dash"
 _UUID_LIKE_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
 
+@dataclass(frozen=True)
+class CloudflareOperationResult:
+    """Structured outcome for a Cloudflare mutation.
+
+    ``confirmed_absent`` is deliberately separate from ``success``: callers
+    may complete cleanup for either, but must retry ``unknown``/``failed``
+    outcomes.  Nested results expose partial outcomes for compound operations.
+    """
+
+    operation: str
+    outcome: str
+    success: bool
+    confirmed_absent: bool = False
+    ownership: str = None
+    remote_id: str = None
+    original_state: object = None
+    restorable: bool = True
+    error: str = None
+    results: dict = field(default_factory=dict)
+
+    def __bool__(self):
+        return self.success
+
+
+def _operation_failure(operation, error, outcome="failed"):
+    return CloudflareOperationResult(
+        operation=operation,
+        outcome=outcome,
+        success=False,
+        error=str(error),
+    )
+
+
+def _ingress_fingerprint(tunnel_id, hostname, service):
+    """Return a stable identity for one ingress rule, not merely its tunnel."""
+    return f"{tunnel_id}|{hostname}|{service}"
+
+
 class WarpStateDB:
     """SQLite-backed storage for docker-dash-managed Warp split tunnel entries."""
 
@@ -60,7 +99,9 @@ class WarpStateDB:
         self._initialize_schema()
 
     def _connect(self):
-        return sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("PRAGMA foreign_keys = ON")
+        return conn
 
     def _initialize_schema(self):
         with self._lock, self._connect() as conn:
@@ -142,6 +183,22 @@ class WarpStateDB:
             )
         return routes
 
+    def upsert_owner_route(self, owner_id, profile_id, hostname):
+        return self.upsert_route(owner_id, profile_id, hostname)
+
+    def get_routes_for_owner(self, owner_id):
+        return self.get_routes_for_container(owner_id)
+
+    def delete_routes_for_owner(self, owner_id):
+        return self.delete_routes_for_container(owner_id)
+
+    def list_owner_ids(self):
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT container_id FROM warp_routes"
+            ).fetchall()
+        return [row[0] for row in rows]
+
 
 class ContainerStateDB:
     """SQLite-backed storage for docker-dash-managed tunnel and Access ownership."""
@@ -155,7 +212,20 @@ class ContainerStateDB:
         self._initialize_schema()
 
     def _connect(self):
-        return sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path)
+        conn.execute("PRAGMA foreign_keys = ON")
+        return conn
+
+    @staticmethod
+    def resource_key(resource_type, hostname, tunnel_name=None):
+        """Return the canonical stable key for a managed Cloudflare resource."""
+        if resource_type == "ingress":
+            if not tunnel_name:
+                raise ValueError("Ingress resources require a tunnel name")
+            return f"ingress:{tunnel_name}:{hostname}"
+        if resource_type in {"dns", "access"}:
+            return f"{resource_type}:{hostname}"
+        raise ValueError(f"Unsupported managed resource type: {resource_type}")
 
     def _initialize_schema(self):
         with self._lock, self._connect() as conn:
@@ -163,11 +233,63 @@ class ContainerStateDB:
                 """
                 CREATE TABLE IF NOT EXISTS managed_container_routes (
                     container_id TEXT PRIMARY KEY,
+                    owner_kind TEXT NOT NULL DEFAULT 'container',
                     tunnel_name TEXT NOT NULL,
                     hostname TEXT NOT NULL,
                     service TEXT,
+                    access_desired INTEGER NOT NULL DEFAULT 0,
+                    lifecycle_state TEXT NOT NULL DEFAULT 'active',
                     updated_at TEXT NOT NULL
                 )
+                """
+            )
+            columns = {
+                row[1] for row in conn.execute(
+                    "PRAGMA table_info(managed_container_routes)"
+                ).fetchall()
+            }
+            if "access_desired" not in columns:
+                conn.execute(
+                    """
+                    ALTER TABLE managed_container_routes
+                    ADD COLUMN access_desired INTEGER NOT NULL DEFAULT 0
+                    """
+                )
+            if "owner_kind" not in columns:
+                conn.execute(
+                    """
+                    ALTER TABLE managed_container_routes
+                    ADD COLUMN owner_kind TEXT NOT NULL DEFAULT 'container'
+                    """
+                )
+            if "lifecycle_state" not in columns:
+                conn.execute(
+                    """
+                    ALTER TABLE managed_container_routes
+                    ADD COLUMN lifecycle_state TEXT NOT NULL DEFAULT 'active'
+                    """
+                )
+            # Triggers add constraint enforcement to both fresh and legacy tables.
+            # SQLite cannot add a CHECK constraint to an existing column without
+            # rebuilding the table, which would make this migration riskier.
+            conn.execute(
+                """
+                CREATE TRIGGER IF NOT EXISTS validate_route_lifecycle_insert
+                BEFORE INSERT ON managed_container_routes
+                WHEN NEW.lifecycle_state NOT IN ('active', 'retired')
+                BEGIN
+                    SELECT RAISE(ABORT, 'invalid managed route lifecycle_state');
+                END
+                """
+            )
+            conn.execute(
+                """
+                CREATE TRIGGER IF NOT EXISTS validate_route_lifecycle_update
+                BEFORE UPDATE OF lifecycle_state ON managed_container_routes
+                WHEN NEW.lifecycle_state NOT IN ('active', 'retired')
+                BEGIN
+                    SELECT RAISE(ABORT, 'invalid managed route lifecycle_state');
+                END
                 """
             )
             conn.execute(
@@ -176,29 +298,93 @@ class ContainerStateDB:
                 ON managed_container_routes(hostname)
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS managed_cloudflare_resources (
+                    resource_key TEXT PRIMARY KEY,
+                    resource_type TEXT NOT NULL,
+                    tunnel_name TEXT,
+                    hostname TEXT NOT NULL,
+                    remote_id TEXT,
+                    ownership TEXT NOT NULL,
+                    original_state_json TEXT,
+                    state TEXT NOT NULL DEFAULT 'active',
+                    updated_at TEXT NOT NULL,
+                    CHECK (ownership IN ('created', 'adopted', 'legacy_unknown')),
+                    CHECK (state IN ('active', 'cleanup_pending', 'cleanup_failed'))
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_managed_resource_identity
+                ON managed_cloudflare_resources(resource_type, IFNULL(tunnel_name, ''), hostname)
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS cloudflare_cleanup_jobs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    resource_key TEXT NOT NULL UNIQUE,
+                    action TEXT NOT NULL,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    next_attempt_at TEXT NOT NULL,
+                    last_error TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY(resource_key)
+                        REFERENCES managed_cloudflare_resources(resource_key)
+                        ON DELETE CASCADE
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_cleanup_jobs_due
+                ON cloudflare_cleanup_jobs(next_attempt_at)
+                """
+            )
 
-    def upsert_container_route(self, container_id, tunnel_name, hostname, service=None):
+    def upsert_container_route(
+        self, container_id, tunnel_name, hostname, service=None, access_desired=False,
+        owner_kind="container",
+    ):
         now = datetime.now(timezone.utc).isoformat()
         with self._lock, self._connect() as conn:
             conn.execute(
                 """
-                INSERT INTO managed_container_routes (container_id, tunnel_name, hostname, service, updated_at)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO managed_container_routes (
+                    container_id, owner_kind, tunnel_name, hostname, service,
+                    access_desired, lifecycle_state, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, 'active', ?)
                 ON CONFLICT(container_id)
                 DO UPDATE SET
+                    owner_kind = excluded.owner_kind,
                     tunnel_name = excluded.tunnel_name,
                     hostname = excluded.hostname,
                     service = excluded.service,
+                    access_desired = excluded.access_desired,
+                    lifecycle_state = 'active',
                     updated_at = excluded.updated_at
                 """,
-                (container_id, tunnel_name, hostname, service, now),
+                (
+                    container_id,
+                    owner_kind,
+                    tunnel_name,
+                    hostname,
+                    service,
+                    int(bool(access_desired)),
+                    now,
+                ),
             )
 
     def get_container_route(self, container_id):
         with self._lock, self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT tunnel_name, hostname, service, updated_at
+                SELECT owner_kind, tunnel_name, hostname, service, access_desired,
+                       lifecycle_state, updated_at
                 FROM managed_container_routes
                 WHERE container_id = ?
                 """,
@@ -208,11 +394,70 @@ class ContainerStateDB:
             return None
         return {
             "container_id": container_id,
-            "tunnel_name": row[0],
-            "hostname": row[1],
-            "service": row[2],
-            "updated_at": row[3],
+            "owner_id": container_id,
+            "owner_kind": row[0],
+            "tunnel_name": row[1],
+            "hostname": row[2],
+            "service": row[3],
+            "access_desired": bool(row[4]),
+            "lifecycle_state": row[5],
+            "updated_at": row[6],
         }
+
+    def retire_container_route(self, container_id):
+        now = datetime.now(timezone.utc).isoformat()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE managed_container_routes
+                SET lifecycle_state = 'retired', updated_at = ?
+                WHERE container_id = ?
+                """,
+                (now, container_id),
+            )
+        return self.get_container_route(container_id)
+
+    def count_active_route_claims(
+        self, tunnel_name, hostname, exclude_container_id=None
+    ):
+        query = """
+            SELECT COUNT(*)
+            FROM managed_container_routes
+            WHERE tunnel_name = ? AND hostname = ? AND lifecycle_state = 'active'
+        """
+        params = [tunnel_name, hostname]
+        if exclude_container_id is not None:
+            query += " AND container_id != ?"
+            params.append(exclude_container_id)
+        with self._lock, self._connect() as conn:
+            return conn.execute(query, params).fetchone()[0]
+
+    def count_active_access_claims(self, hostname, exclude_container_id=None):
+        query = """
+            SELECT COUNT(*)
+            FROM managed_container_routes
+            WHERE hostname = ? AND access_desired = 1
+              AND lifecycle_state = 'active'
+        """
+        params = [hostname]
+        if exclude_container_id is not None:
+            query += " AND container_id != ?"
+            params.append(exclude_container_id)
+        with self._lock, self._connect() as conn:
+            return conn.execute(query, params).fetchone()[0]
+
+    def count_active_hostname_claims(self, hostname, exclude_owner_id=None):
+        query = """
+            SELECT COUNT(*)
+            FROM managed_container_routes
+            WHERE hostname = ? AND lifecycle_state = 'active'
+        """
+        params = [hostname]
+        if exclude_owner_id is not None:
+            query += " AND container_id != ?"
+            params.append(exclude_owner_id)
+        with self._lock, self._connect() as conn:
+            return conn.execute(query, params).fetchone()[0]
 
     def delete_container_route(self, container_id):
         managed_route = self.get_container_route(container_id)
@@ -230,7 +475,8 @@ class ContainerStateDB:
         with self._lock, self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT container_id, tunnel_name, hostname, service, updated_at
+                SELECT container_id, owner_kind, tunnel_name, hostname, service,
+                       access_desired, lifecycle_state, updated_at
                 FROM managed_container_routes
                 ORDER BY updated_at ASC
                 """
@@ -238,13 +484,251 @@ class ContainerStateDB:
         return [
             {
                 "container_id": row[0],
-                "tunnel_name": row[1],
-                "hostname": row[2],
-                "service": row[3],
-                "updated_at": row[4],
+                "owner_id": row[0],
+                "owner_kind": row[1],
+                "tunnel_name": row[2],
+                "hostname": row[3],
+                "service": row[4],
+                "access_desired": bool(row[5]),
+                "lifecycle_state": row[6],
+                "updated_at": row[7],
             }
             for row in rows
         ]
+
+    # Owner-oriented aliases keep container callers compatible while allowing
+    # stable Swarm service IDs to use the same ownership ledger and outbox.
+    def upsert_route_claim(self, owner_id, owner_kind, tunnel_name, hostname,
+                           service=None, access_desired=False):
+        return self.upsert_container_route(
+            owner_id, tunnel_name, hostname, service,
+            access_desired=access_desired, owner_kind=owner_kind,
+        )
+
+    def get_route_claim(self, owner_id):
+        return self.get_container_route(owner_id)
+
+    def retire_route_claim(self, owner_id):
+        return self.retire_container_route(owner_id)
+
+    def delete_route_claim(self, owner_id):
+        return self.delete_container_route(owner_id)
+
+    def list_route_claims(self, owner_kind=None):
+        claims = self.list_container_routes()
+        if owner_kind is None:
+            return claims
+        return [claim for claim in claims if claim["owner_kind"] == owner_kind]
+
+    def upsert_resource(
+        self,
+        resource_key,
+        resource_type,
+        hostname,
+        tunnel_name=None,
+        remote_id=None,
+        ownership="legacy_unknown",
+        original_state_json=None,
+        state="active",
+    ):
+        now = datetime.now(timezone.utc).isoformat()
+        if ownership not in {"created", "adopted", "legacy_unknown"}:
+            raise ValueError(f"Invalid resource ownership: {ownership}")
+        if state not in {"active", "cleanup_pending", "cleanup_failed"}:
+            raise ValueError(f"Invalid managed resource state: {state}")
+        if original_state_json is not None and not isinstance(original_state_json, str):
+            original_state_json = json.dumps(original_state_json, sort_keys=True)
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO managed_cloudflare_resources (
+                    resource_key, resource_type, tunnel_name, hostname, remote_id,
+                    ownership, original_state_json, state, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(resource_key)
+                DO UPDATE SET
+                    resource_type = excluded.resource_type,
+                    tunnel_name = excluded.tunnel_name,
+                    hostname = excluded.hostname,
+                    remote_id = excluded.remote_id,
+                    ownership = excluded.ownership,
+                    original_state_json = excluded.original_state_json,
+                    state = excluded.state,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    resource_key, resource_type, tunnel_name, hostname, remote_id,
+                    ownership, original_state_json, state, now,
+                ),
+            )
+            if state == "active":
+                conn.execute(
+                    "DELETE FROM cloudflare_cleanup_jobs WHERE resource_key = ?",
+                    (resource_key,),
+                )
+        return self.get_resource(resource_key)
+
+    def get_resource(self, resource_key):
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT resource_type, tunnel_name, hostname, remote_id, ownership,
+                       original_state_json, state, updated_at
+                FROM managed_cloudflare_resources
+                WHERE resource_key = ?
+                """,
+                (resource_key,),
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "resource_key": resource_key,
+            "resource_type": row[0],
+            "tunnel_name": row[1],
+            "hostname": row[2],
+            "remote_id": row[3],
+            "ownership": row[4],
+            "original_state_json": row[5],
+            "state": row[6],
+            "updated_at": row[7],
+        }
+
+    def mark_resource_cleanup_pending(self, resource_key, action):
+        if not action:
+            raise ValueError("Cleanup action must be non-empty")
+        now = datetime.now(timezone.utc).isoformat()
+        with self._lock, self._connect() as conn:
+            updated = conn.execute(
+                """
+                UPDATE managed_cloudflare_resources
+                SET state = 'cleanup_pending', updated_at = ?
+                WHERE resource_key = ?
+                """,
+                (now, resource_key),
+            )
+            if updated.rowcount == 0:
+                raise KeyError(f"Unknown managed resource: {resource_key}")
+            conn.execute(
+                """
+                INSERT INTO cloudflare_cleanup_jobs (
+                    resource_key, action, attempts, next_attempt_at,
+                    last_error, created_at, updated_at
+                )
+                VALUES (?, ?, 0, ?, NULL, ?, ?)
+                ON CONFLICT(resource_key)
+                DO UPDATE SET
+                    action = excluded.action,
+                    next_attempt_at = excluded.next_attempt_at,
+                    last_error = NULL,
+                    updated_at = excluded.updated_at
+                """,
+                (resource_key, action, now, now, now),
+            )
+
+    def cancel_cleanup(self, resource_key):
+        """Atomically cancel queued cleanup and reactivate an existing resource."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._lock, self._connect() as conn:
+            updated = conn.execute(
+                """
+                UPDATE managed_cloudflare_resources
+                SET state = 'active', updated_at = ?
+                WHERE resource_key = ?
+                """,
+                (now, resource_key),
+            )
+            if updated.rowcount == 0:
+                return False
+            conn.execute(
+                "DELETE FROM cloudflare_cleanup_jobs WHERE resource_key = ?",
+                (resource_key,),
+            )
+        return True
+
+    def record_cleanup_failure(self, resource_key, error, next_attempt_at):
+        if isinstance(next_attempt_at, datetime):
+            next_attempt_at = next_attempt_at.isoformat()
+        now = datetime.now(timezone.utc).isoformat()
+        with self._lock, self._connect() as conn:
+            updated = conn.execute(
+                """
+                UPDATE cloudflare_cleanup_jobs
+                SET attempts = attempts + 1, next_attempt_at = ?,
+                    last_error = ?, updated_at = ?
+                WHERE resource_key = ?
+                """,
+                (next_attempt_at, str(error), now, resource_key),
+            )
+            if updated.rowcount == 0:
+                raise KeyError(f"No cleanup job for resource: {resource_key}")
+            conn.execute(
+                """
+                UPDATE managed_cloudflare_resources
+                SET state = 'cleanup_failed', updated_at = ?
+                WHERE resource_key = ?
+                """,
+                (now, resource_key),
+            )
+
+    def complete_cleanup(self, resource_key):
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "DELETE FROM cloudflare_cleanup_jobs WHERE resource_key = ?",
+                (resource_key,),
+            )
+            conn.execute(
+                "DELETE FROM managed_cloudflare_resources WHERE resource_key = ?",
+                (resource_key,),
+            )
+
+    def list_due_cleanup_jobs(self, now=None):
+        now = now or datetime.now(timezone.utc)
+        if isinstance(now, datetime):
+            now = now.isoformat()
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT j.id, j.resource_key, j.action, j.attempts,
+                       j.next_attempt_at, j.last_error, j.created_at, j.updated_at,
+                       r.resource_type, r.tunnel_name, r.hostname, r.remote_id,
+                       r.ownership, r.original_state_json, r.state
+                FROM cloudflare_cleanup_jobs AS j
+                JOIN managed_cloudflare_resources AS r
+                  ON r.resource_key = j.resource_key
+                WHERE j.next_attempt_at <= ?
+                ORDER BY j.next_attempt_at ASC, j.id ASC
+                """,
+                (now,),
+            ).fetchall()
+        keys = (
+            "id", "resource_key", "action", "attempts", "next_attempt_at",
+            "last_error", "created_at", "updated_at", "resource_type",
+            "tunnel_name", "hostname", "remote_id", "ownership",
+            "original_state_json", "resource_state",
+        )
+        return [dict(zip(keys, row)) for row in rows]
+
+    def delete_retired_claims_without_jobs(self):
+        with self._lock, self._connect() as conn:
+            result = conn.execute(
+                """
+                DELETE FROM managed_container_routes
+                WHERE lifecycle_state = 'retired'
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM managed_cloudflare_resources AS r
+                      JOIN cloudflare_cleanup_jobs AS j
+                        ON j.resource_key = r.resource_key
+                      WHERE r.hostname = managed_container_routes.hostname
+                        AND (
+                            r.tunnel_name IS NULL
+                            OR r.tunnel_name = managed_container_routes.tunnel_name
+                        )
+                  )
+                """
+            )
+        return result.rowcount
 
 
 def get_warp_state_db():
@@ -985,18 +1469,22 @@ def add_or_update_ingress_rule(tunnel_name: str, new_rule: dict, manager=None):
             validate_service_url(new_rule['service'])
     except ValidationError as e:
         logging.error(f"Validation error in add_or_update_ingress_rule: {e}")
-        return False
+        return _operation_failure("add_or_update_ingress_rule", e)
         
     if not manager.cf_client or not manager.account_id:
         logging.error("Cloudflare client not initialized. Cannot update ingress rule.")
-        return False
+        return _operation_failure("add_or_update_ingress_rule", "Cloudflare client or account ID not initialized")
 
     with manager._cache_lock:
         target_tunnel_data = next((data for data in manager.tunnel_cache.values() if data["tunnel_object"].name == tunnel_name), None)
 
         if not target_tunnel_data:
             logging.error(f"Tunnel '{tunnel_name}' not found in cache. Cannot manage route for hostname '{new_rule.get('hostname')}'.")
-            return False
+            return _operation_failure(
+                "add_or_update_ingress_rule",
+                f"Tunnel '{tunnel_name}' not found in cache",
+                outcome="unknown",
+            )
 
         new_hostname = new_rule.get("hostname")
         current_rules = target_tunnel_data["connections"]
@@ -1006,12 +1494,27 @@ def add_or_update_ingress_rule(tunnel_name: str, new_rule: dict, manager=None):
         logging.info(f"Ingress rule '{new_hostname}' -> '{new_rule.get('service')}' already exists for tunnel '{tunnel_name}'. No update needed.")
         # Still ensure DNS record exists for this hostname
         logging.debug(f"Ensuring DNS record exists for existing ingress rule '{new_hostname}'")
-        ensure_cname_record_exists(new_hostname, tunnel_name, manager)
-        return True
+        dns_result = ensure_cname_record_exists(new_hostname, tunnel_name, manager)
+        return CloudflareOperationResult(
+            operation="add_or_update_ingress_rule",
+            outcome="unchanged",
+            success=True,
+            ownership="adopted",
+            remote_id=_ingress_fingerprint(
+                target_tunnel_data["tunnel_object"].id,
+                new_hostname,
+                new_rule.get("service"),
+            ),
+            results={"dns": dns_result},
+        )
 
     logging.info(f"Updating ingress rules for tunnel '{tunnel_name}' to set route for '{new_hostname}'.")
 
     # Build the new list of rules, excluding any existing rule for the same hostname
+    previous_rule = next(
+        (rule for rule in current_rules if rule.hostname == new_hostname), None
+    )
+    previous_rule_state = previous_rule.dict() if previous_rule else None
     updated_ingress_rules = [rule.dict() for rule in current_rules if rule.hostname != new_hostname and rule.hostname is not None]
     updated_ingress_rules.append(new_rule)
 
@@ -1049,16 +1552,25 @@ def add_or_update_ingress_rule(tunnel_name: str, new_rule: dict, manager=None):
         
         # ALWAYS ensure DNS is created, regardless of cache update success
         logging.debug(f"Attempting to create/update DNS record for hostname '{new_hostname}' pointing to tunnel '{tunnel_name}'")
-        ensure_cname_record_exists(new_hostname, tunnel_name, manager)
+        dns_result = ensure_cname_record_exists(new_hostname, tunnel_name, manager)
+        return CloudflareOperationResult(
+            operation="add_or_update_ingress_rule",
+            outcome="updated" if previous_rule else "created",
+            success=True,
+            ownership="adopted" if previous_rule else "created",
+            remote_id=_ingress_fingerprint(
+                tunnel_id, new_hostname, new_rule.get("service")
+            ),
+            original_state=previous_rule_state,
+            results={"dns": dns_result},
+        )
 
     except cloudflare.APIError as e:
         logging.error(f"Failed to update tunnel configuration for '{tunnel_name}': {e}")
-        return False
+        return _operation_failure("add_or_update_ingress_rule", e)
     except Exception as e:
         logging.error(f"Unexpected error while updating tunnel '{tunnel_name}': {e}", exc_info=True)
-        return False
-    
-    return True
+        return _operation_failure("add_or_update_ingress_rule", e)
 
 def ensure_cname_record_exists(hostname: str, tunnel_name: str, manager=None):
     """
@@ -1083,17 +1595,22 @@ def ensure_cname_record_exists(hostname: str, tunnel_name: str, manager=None):
         validate_tunnel_name(tunnel_name)
     except ValidationError as e:
         logging.error(f"[DNS] Validation error in ensure_cname_record_exists: {e}")
-        return
+        return _operation_failure("ensure_cname_record_exists", e)
         
     if not manager.cf_client:
         logging.error("[DNS] Cloudflare client not initialized. Cannot create CNAME record.")
-        return
+        return _operation_failure("ensure_cname_record_exists", "Cloudflare client not initialized")
     
     # Check if DNS management is disabled
     manage_dns = os.environ.get("MANAGE_DNS_RECORDS", "true").lower() == "true"
     if not manage_dns:
         logging.info(f"[DNS] DNS management disabled (MANAGE_DNS_RECORDS=false) - skipping CNAME for '{hostname}'.")
-        return
+        return CloudflareOperationResult(
+            operation="ensure_cname_record_exists",
+            outcome="skipped",
+            success=True,
+            restorable=False,
+        )
 
     # Find the zone for the hostname by finding longest matching suffix
     # This handles multi-part TLDs like .co.uk correctly
@@ -1117,13 +1634,21 @@ def ensure_cname_record_exists(hostname: str, tunnel_name: str, manager=None):
         if not zone:
             logging.error(f"[DNS] No matching zone found in cache for hostname '{hostname}'.")
             logging.error(f"[DNS] This likely means the Cloudflare zone is not in the zone cache. Check your Cloudflare credentials and that the zone exists.")
-            return
+            return _operation_failure(
+                "ensure_cname_record_exists",
+                f"No cached zone for hostname '{hostname}'",
+                outcome="unknown",
+            )
 
         # Find the tunnel to get its CNAME
         target_tunnel_data = next((data for data in manager.tunnel_cache.values() if data["tunnel_object"].name == tunnel_name), None)
         if not target_tunnel_data:
             logging.error(f"[DNS] Tunnel '{tunnel_name}' not found in cache.")
-            return
+            return _operation_failure(
+                "ensure_cname_record_exists",
+                f"Tunnel '{tunnel_name}' not found in cache",
+                outcome="unknown",
+            )
 
         tunnel_cname = f"{target_tunnel_data['tunnel_object'].id}.cfargotunnel.com"
 
@@ -1148,7 +1673,14 @@ def ensure_cname_record_exists(hostname: str, tunnel_name: str, manager=None):
             
             if existing_record.content == tunnel_cname:
                 logging.info(f"[DNS] ✓ CNAME record for '{hostname}' already points to tunnel '{tunnel_name}'.")
-                return
+                return CloudflareOperationResult(
+                    operation="ensure_cname_record_exists",
+                    outcome="unchanged",
+                    success=True,
+                    ownership="adopted",
+                    remote_id=existing_record.id,
+                    original_state=existing_record.dict() if hasattr(existing_record, "dict") else None,
+                )
             else:
                 # DNS points to a different tunnel
                 if ha_mode:
@@ -1156,14 +1688,21 @@ def ensure_cname_record_exists(hostname: str, tunnel_name: str, manager=None):
                         f"[DNS] HA mode enabled: CNAME for '{hostname}' points to '{existing_record.content}' "
                         f"(not '{tunnel_cname}'). Leaving as-is for load balancing."
                     )
-                    return
+                    return CloudflareOperationResult(
+                        operation="ensure_cname_record_exists",
+                        outcome="unchanged",
+                        success=True,
+                        ownership="adopted",
+                        remote_id=existing_record.id,
+                        original_state=existing_record.dict() if hasattr(existing_record, "dict") else None,
+                    )
                 else:
                     # Update the DNS record to point to the new tunnel
                     logging.warning(
                         f"[DNS] CNAME for '{hostname}' points to '{existing_record.content}' but should point to '{tunnel_cname}'. "
                         f"Updating..."
                     )
-                    retry_on_api_error()(
+                    response = retry_on_api_error()(
                         lambda: manager.cf_client.dns.records.update(
                             zone_id=zone.id,
                             dns_record_id=existing_record.id,
@@ -1175,11 +1714,23 @@ def ensure_cname_record_exists(hostname: str, tunnel_name: str, manager=None):
                         )
                     )()
                     logging.info(f"[DNS] ✓ Updated CNAME record for '{hostname}' → '{tunnel_cname}'")
-                return
+                return CloudflareOperationResult(
+                    operation="ensure_cname_record_exists",
+                    outcome="updated",
+                    success=True,
+                    ownership="adopted",
+                    remote_id=getattr(response, "id", existing_record.id),
+                    original_state=existing_record.dict() if hasattr(existing_record, "dict") else {
+                        "id": existing_record.id,
+                        "type": existing_record.type,
+                        "content": existing_record.content,
+                        "proxied": existing_record.proxied,
+                    },
+                )
 
         # No record exists - create one
         logging.info(f"[DNS] Creating CNAME record for '{hostname}' → '{tunnel_cname}'")
-        retry_on_api_error()(
+        response = retry_on_api_error()(
             lambda: manager.cf_client.dns.records.create(
                 zone_id=zone.id,
                 type="CNAME",
@@ -1190,13 +1741,22 @@ def ensure_cname_record_exists(hostname: str, tunnel_name: str, manager=None):
             )
         )()
         logging.info(f"[DNS] ✓ Successfully created CNAME record for '{hostname}'")
+        return CloudflareOperationResult(
+            operation="ensure_cname_record_exists",
+            outcome="created",
+            success=True,
+            ownership="created",
+            remote_id=getattr(response, "id", None),
+        )
             
     except cloudflare.APIError as e:
         logging.error(f"[DNS] Cloudflare API error: {e}")
+        return _operation_failure("ensure_cname_record_exists", e)
     except Exception as e:
         logging.error(f"[DNS] Unexpected error: {e}", exc_info=True)
+        return _operation_failure("ensure_cname_record_exists", e)
 
-def remove_cname_record(hostname: str, manager=None):
+def remove_cname_record(hostname: str, manager=None, remote_id=None):
     """
     Removes all CNAME records for a given hostname.
     
@@ -1215,11 +1775,11 @@ def remove_cname_record(hostname: str, manager=None):
         validate_hostname(hostname)
     except ValidationError as e:
         logging.error(f"Validation error in remove_cname_record: {e}")
-        return
+        return _operation_failure("remove_cname_record", e)
         
     if not manager.cf_client:
         logging.error("Cloudflare client not initialized. Cannot remove CNAME record.")
-        return
+        return _operation_failure("remove_cname_record", "Cloudflare client not initialized")
 
     # Find the zone for the hostname by finding longest matching suffix
     zone = None
@@ -1235,7 +1795,11 @@ def remove_cname_record(hostname: str, manager=None):
     
     if not zone:
         logging.warning(f"No matching zone found for hostname '{hostname}'. Cannot remove CNAME record.")
-        return
+        return _operation_failure(
+            "remove_cname_record",
+            f"No cached zone for hostname '{hostname}'",
+            outcome="unknown",
+        )
 
     try:
         # Find all DNS records for this hostname
@@ -1244,18 +1808,62 @@ def remove_cname_record(hostname: str, manager=None):
         )())
         if not records:
             logging.info(f"CNAME record for '{hostname}' not found. No action needed.")
-            return
+            return CloudflareOperationResult(
+                operation="remove_cname_record",
+                outcome="absent",
+                success=True,
+                confirmed_absent=True,
+            )
 
-        # Remove all matching records (handles duplicates)
-        for record in records:
+        records_to_remove = records
+        if remote_id:
+            records_to_remove = [
+                record for record in records
+                if str(getattr(record, "id", "")) == str(remote_id)
+            ]
+            if not records_to_remove:
+                logging.info(
+                    "Managed DNS record %s for '%s' is already absent; preserving "
+                    "other records with that hostname.",
+                    remote_id,
+                    hostname,
+                )
+                return CloudflareOperationResult(
+                    operation="remove_cname_record",
+                    outcome="absent",
+                    success=True,
+                    confirmed_absent=True,
+                    remote_id=str(remote_id),
+                )
+            managed_record = records_to_remove[0]
+            if str(getattr(managed_record, "type", "")).upper() != "CNAME":
+                return _operation_failure(
+                    "remove_cname_record",
+                    f"DNS record {remote_id} is no longer a CNAME; preserving it",
+                    outcome="ownership_changed",
+                )
+
+        # Legacy callers without an ID retain duplicate cleanup behavior. The
+        # ownership outbox always supplies an exact managed record ID.
+        for record in records_to_remove:
             logging.info(f"Removing CNAME record for '{hostname}' (ID: {record.id}).")
             retry_on_api_error()(
                 lambda: manager.cf_client.dns.records.delete(zone_id=zone.id, dns_record_id=record.id)
             )()
         
-        logging.info(f"Successfully removed {len(records)} CNAME record(s) for '{hostname}'.")
+        logging.info(f"Successfully removed {len(records_to_remove)} CNAME record(s) for '{hostname}'.")
+        return CloudflareOperationResult(
+            operation="remove_cname_record",
+            outcome="removed",
+            success=True,
+            remote_id=str(remote_id) if remote_id else None,
+        )
     except cloudflare.APIError as e:
         logging.error(f"Failed to remove CNAME record for '{hostname}': {e}")
+        return _operation_failure("remove_cname_record", e)
+    except Exception as e:
+        logging.error(f"Unexpected error removing CNAME record for '{hostname}': {e}", exc_info=True)
+        return _operation_failure("remove_cname_record", e)
 
 def add_or_update_access_application(hostname: str, access_config: dict, manager=None):
     """
@@ -1277,11 +1885,14 @@ def add_or_update_access_application(hostname: str, access_config: dict, manager
         validate_hostname(hostname)
     except ValidationError as e:
         logging.error(f"Validation error in add_or_update_access_application: {e}")
-        return
+        return _operation_failure("add_or_update_access_application", e)
         
     if not manager.cf_client or not manager.account_id:
         logging.error("Cloudflare client not initialized. Cannot manage Access Application.")
-        return
+        return _operation_failure(
+            "add_or_update_access_application",
+            "Cloudflare client or account ID not initialized",
+        )
 
     with manager._cache_lock:
         # 1. Translate policy names to UUIDs
@@ -1345,8 +1956,20 @@ def add_or_update_access_application(hostname: str, access_config: dict, manager
             with manager._cache_lock:
                 manager.access_apps_cache[hostname] = response # Update cache
             logging.info(f"Successfully updated Access Application for '{hostname}'.")
+            return CloudflareOperationResult(
+                operation="add_or_update_access_application",
+                outcome="updated",
+                success=True,
+                ownership="adopted",
+                remote_id=getattr(response, "id", getattr(existing_app, "id", None)),
+                restorable=False,
+            )
         except cloudflare.APIError as e:
             logging.error(f"Failed to update Access Application for '{hostname}': {e}")
+            return _operation_failure("add_or_update_access_application", e)
+        except Exception as e:
+            logging.error(f"Unexpected error updating Access Application for '{hostname}': {e}", exc_info=True)
+            return _operation_failure("add_or_update_access_application", e)
     elif policy_uuids:
         try:
             payload["policies"] = [{"id": uid, "precedence": i + 1} for i, uid in enumerate(policy_uuids)]
@@ -1360,10 +1983,26 @@ def add_or_update_access_application(hostname: str, access_config: dict, manager
             with manager._cache_lock:
                 manager.access_apps_cache[hostname] = response # Update cache
             logging.info(f"Successfully created Access Application for '{hostname}'.")
+            return CloudflareOperationResult(
+                operation="add_or_update_access_application",
+                outcome="created",
+                success=True,
+                ownership="created",
+                remote_id=getattr(response, "id", None),
+            )
         except cloudflare.APIError as e:
             logging.error(f"Failed to create Access Application for '{hostname}': {e}")
+            return _operation_failure("add_or_update_access_application", e)
+        except Exception as e:
+            logging.error(f"Unexpected error creating Access Application for '{hostname}': {e}", exc_info=True)
+            return _operation_failure("add_or_update_access_application", e)
     else:
         logging.info(f"Skipping Access Application creation for '{hostname}' because no valid policies are available.")
+        return _operation_failure(
+            "add_or_update_access_application",
+            "No valid Access policies are available",
+            outcome="skipped",
+        )
 
 def remove_ingress_rule(tunnel_name: str, hostname: str, manager=None):
     """
@@ -1386,11 +2025,14 @@ def remove_ingress_rule(tunnel_name: str, hostname: str, manager=None):
         validate_hostname(hostname)
     except ValidationError as e:
         logging.error(f"Validation error in remove_ingress_rule: {e}")
-        return
+        return _operation_failure("remove_ingress_rule", e)
         
     if not manager.cf_client or not manager.account_id:
         logging.error("Cloudflare client not initialized. Cannot remove ingress rule.")
-        return
+        return _operation_failure(
+            "remove_ingress_rule",
+            "Cloudflare client or account ID not initialized",
+        )
 
     with manager._cache_lock:
         target_tunnel_data = None
@@ -1401,7 +2043,11 @@ def remove_ingress_rule(tunnel_name: str, hostname: str, manager=None):
 
         if not target_tunnel_data:
             logging.error(f"Tunnel '{tunnel_name}' not found in cache. Cannot remove route for hostname '{hostname}'.")
-            return
+            return _operation_failure(
+                "remove_ingress_rule",
+                f"Tunnel '{tunnel_name}' not found in cache",
+                outcome="unknown",
+            )
 
         # Find the rule to remove
         rule_to_remove = None
@@ -1412,7 +2058,11 @@ def remove_ingress_rule(tunnel_name: str, hostname: str, manager=None):
         
         if not rule_to_remove:
             logging.info(f"Ingress rule for hostname '{hostname}' not found in tunnel '{tunnel_name}'. No action needed.")
-            return
+            return _operation_failure(
+                "remove_ingress_rule",
+                f"Ingress rule for '{hostname}' not found in cache",
+                outcome="unknown",
+            )
 
         logging.info(f"Removing ingress rule for '{hostname}' from tunnel '{tunnel_name}'.")
 
@@ -1445,12 +2095,21 @@ def remove_ingress_rule(tunnel_name: str, hostname: str, manager=None):
             else:
                 manager.tunnel_cache[tunnel_id]["connections"] = updated_ingress_rules
         
-        remove_cname_record(hostname)
+        return CloudflareOperationResult(
+            operation="remove_ingress_rule",
+            outcome="removed",
+            success=True,
+            remote_id=tunnel_id,
+        )
 
     except cloudflare.APIError as e:
         logging.error(f"Failed to update tunnel configuration for '{tunnel_name}' to remove rule: {e}")
+        return _operation_failure("remove_ingress_rule", e)
+    except Exception as e:
+        logging.error(f"Unexpected error removing ingress rule from '{tunnel_name}': {e}", exc_info=True)
+        return _operation_failure("remove_ingress_rule", e)
 
-def remove_access_application(hostname: str, manager=None):
+def remove_access_application(hostname: str, manager=None, remote_id=None):
     """
     Deletes a Cloudflare Access Application by its hostname.
 
@@ -1469,31 +2128,66 @@ def remove_access_application(hostname: str, manager=None):
         validate_hostname(hostname)
     except ValidationError as e:
         logging.error(f"Validation error in remove_access_application: {e}")
-        return
+        return _operation_failure("remove_access_application", e)
         
     if not manager.cf_client or not manager.account_id:
         logging.error("Cloudflare client not initialized. Cannot remove Access Application.")
-        return
+        return _operation_failure(
+            "remove_access_application",
+            "Cloudflare client or account ID not initialized",
+        )
 
     with manager._cache_lock:
         existing_app = manager.access_apps_cache.get(hostname)
+    if (
+        remote_id
+        and existing_app
+        and str(getattr(existing_app, "id", "")) != str(remote_id)
+    ):
+        return _operation_failure(
+            "remove_access_application",
+            f"Access Application for '{hostname}' now has a different ID; preserving it",
+            outcome="ownership_changed",
+        )
     if not existing_app:
-        logging.info(f"Access Application for '{hostname}' not found in cache. No action needed.")
-        return
+        if not remote_id:
+            logging.info(f"Access Application for '{hostname}' not found in cache. No action needed.")
+            return _operation_failure(
+                "remove_access_application",
+                f"Access Application for '{hostname}' not found in cache",
+                outcome="unknown",
+            )
+        target_app_id = remote_id
+    else:
+        target_app_id = existing_app.id
 
-    logging.info(f"Removing Access Application for '{hostname}' (ID: {existing_app.id}).")
+    logging.info(f"Removing Access Application for '{hostname}' (ID: {target_app_id}).")
 
     try:
         retry_on_api_error()(
             lambda: manager.cf_client.zero_trust.access.applications.delete(
-                app_id=existing_app.id,
+                app_id=target_app_id,
                 account_id=manager.account_id
             )
         )()
         # Remove from cache
         with manager._cache_lock:
-            if hostname in manager.access_apps_cache:
+            if (
+                hostname in manager.access_apps_cache
+                and str(getattr(manager.access_apps_cache[hostname], "id", ""))
+                == str(target_app_id)
+            ):
                 del manager.access_apps_cache[hostname]
         logging.info(f"Successfully deleted Access Application for '{hostname}'.")
+        return CloudflareOperationResult(
+            operation="remove_access_application",
+            outcome="removed",
+            success=True,
+            remote_id=str(target_app_id),
+        )
     except cloudflare.APIError as e:
         logging.error(f"Failed to delete Access Application for '{hostname}': {e}")
+        return _operation_failure("remove_access_application", e)
+    except Exception as e:
+        logging.error(f"Unexpected error deleting Access Application for '{hostname}': {e}", exc_info=True)
+        return _operation_failure("remove_access_application", e)

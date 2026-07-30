@@ -11,6 +11,9 @@ docker-dash:
     # targeting /run/secrets/CF_ACCOUNT_ID and /run/secrets/CF_API_TOKEN.
     # For custom target paths, set CF_ACCOUNT_ID_FILE and CF_API_TOKEN_FILE.
     LOG_LEVEL: INFO
+    # Use "manager" when this stack runs on a Swarm manager to discover
+    # services on every node. "containers" remains the default.
+    # SWARM_DISCOVERY_MODE: manager
     # Persist docker-dash managed state across restarts
     # DOCKER_DASH_STATE_DB: /data/docker-dash-state.db
     # Optional: Configure web server port (default: 3445)

@@ -116,6 +116,37 @@ class TestDockerReconciliation:
 
             mock_process.assert_called_once_with(mock_container)
 
+    def test_disabled_container_status_counts_as_tracked(self, monkeypatch):
+        """Unlabelled/disabled Swarm tasks should not be reprocessed every interval."""
+        monkeypatch.setattr(docker_client, '_last_processed_time', {"abc123": 123.0})
+        monkeypatch.setattr(docker_client, '_container_ingress_state', {})
+        monkeypatch.setattr(
+            docker_client,
+            '_container_status',
+            {"abc123": {"name": "stack_worker.1.task", "status": "disabled"}},
+        )
+        monkeypatch.setattr(docker_client, '_reconcile_interval_seconds', 1)
+
+        mock_container = Mock()
+        mock_container.id = "abc123"
+        mock_container.name = "stack_worker.1.task"
+        mock_docker_client = MagicMock()
+        mock_docker_client.containers.list.return_value = [mock_container]
+
+        with patch('docker_client.process_container') as mock_process:
+            docker_client._listener_stop_event.clear()
+            reconcile_thread = threading.Thread(
+                target=docker_client._reconcile_loop,
+                args=(mock_docker_client,),
+                daemon=True,
+            )
+            reconcile_thread.start()
+            time.sleep(1.5)
+            docker_client._listener_stop_event.set()
+            reconcile_thread.join(timeout=2)
+
+        mock_process.assert_not_called()
+
     def test_reconciliation_removes_stale_containers(self, monkeypatch):
         """Test that reconciliation removes ingress rules for stopped containers."""
         monkeypatch.setattr(docker_client, '_last_processed_time', {})
@@ -141,5 +172,71 @@ class TestDockerReconciliation:
                 docker_client._listener_stop_event.set()
                 reconcile_thread.join(timeout=2)
 
-                mock_remove_ingress.assert_called_once_with("test-tunnel", "app.example.com")
-                mock_remove_access.assert_called_once_with("app.example.com")
+                # Stale legacy state is retired locally but cannot establish
+                # ownership of the remote Cloudflare resources.
+                mock_remove_ingress.assert_not_called()
+                mock_remove_access.assert_not_called()
+
+    def test_startup_processes_replacement_before_stale_cleanup(self, monkeypatch):
+        """Startup establishes replacement ownership before pruning old task IDs."""
+        old_id = "old-swarm-task"
+        replacement = Mock()
+        replacement.id = "new-swarm-task"
+        replacement.name = "stack_app.1.new"
+        replacement.labels = {
+            "docker.dash.enable": "true",
+            "docker.dash.tunnel": "test-tunnel",
+            "docker.dash.hostname": "app.example.com",
+            "docker.dash.service": "http://app:8080",
+            "com.docker.swarm.service.name": "stack_app",
+        }
+        mock_docker_client = MagicMock()
+        mock_docker_client.containers.list.return_value = [replacement]
+        monkeypatch.setattr(docker_client, 'get_docker_client', lambda: mock_docker_client)
+        monkeypatch.setattr(docker_client, '_deferred_cleanup_ids', set())
+
+        db = docker_client.get_container_state_db()
+        db.upsert_container_route(old_id, "test-tunnel", "app.example.com", "http://app:8080")
+        calls = []
+
+        def process_replacement(container):
+            calls.append(("process", container.id))
+            db.upsert_container_route(
+                container.id,
+                "test-tunnel",
+                "app.example.com",
+                "http://app:8080",
+            )
+
+        class FinishedThread:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def start(self):
+                pass
+
+            def is_alive(self):
+                return False
+
+        monkeypatch.setattr(docker_client, 'process_container', process_replacement)
+        monkeypatch.setattr(docker_client.threading, 'Thread', FinishedThread)
+        monkeypatch.setattr(docker_client, '_listen_for_events', lambda client: None)
+
+        with patch(
+            'docker_client._cleanup_warp_for_container',
+            side_effect=lambda container_id: calls.append(("warp-cleanup", container_id)),
+        ), patch(
+            'docker_client.remove_ingress_rule'
+        ) as mock_remove_ingress, patch(
+            'docker_client.remove_access_application'
+        ) as mock_remove_access:
+            docker_client.start_event_listener()
+
+        assert calls == [
+            ("process", replacement.id),
+            ("warp-cleanup", old_id),
+        ]
+        mock_remove_ingress.assert_not_called()
+        mock_remove_access.assert_not_called()
+        assert db.get_container_route(old_id) is None
+        assert db.get_container_route(replacement.id) is not None
