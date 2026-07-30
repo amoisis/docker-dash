@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
@@ -311,6 +312,29 @@ def test_reactivating_resource_removes_stale_cleanup_job(state_db):
     assert state_db.list_due_cleanup_jobs(
         datetime.now(timezone.utc) + timedelta(days=1)
     ) == []
+
+
+def test_resource_original_state_serializes_nested_datetimes(state_db):
+    created_at = datetime(2026, 7, 30, 4, 55, tzinfo=timezone.utc)
+    modified_at = datetime(2026, 7, 30, 4, 56, 1)
+
+    state_db.upsert_resource(
+        "dns:app.example.com",
+        "dns",
+        "app.example.com",
+        remote_id="dns-record-id",
+        ownership="adopted",
+        original_state_json={
+            "created_on": created_at,
+            "metadata": {"modified_on": modified_at},
+        },
+    )
+
+    stored = state_db.get_resource("dns:app.example.com")
+    assert json.loads(stored["original_state_json"]) == {
+        "created_on": created_at.isoformat(),
+        "metadata": {"modified_on": modified_at.isoformat()},
+    }
 
 
 def test_foreign_keys_are_enabled_and_cleanup_jobs_cascade(state_db):

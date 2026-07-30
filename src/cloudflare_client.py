@@ -537,7 +537,11 @@ class ContainerStateDB:
         if state not in {"active", "cleanup_pending", "cleanup_failed"}:
             raise ValueError(f"Invalid managed resource state: {state}")
         if original_state_json is not None and not isinstance(original_state_json, str):
-            original_state_json = json.dumps(original_state_json, sort_keys=True)
+            original_state_json = json.dumps(
+                original_state_json,
+                sort_keys=True,
+                cls=CloudflareJSONEncoder,
+            )
         with self._lock, self._connect() as conn:
             conn.execute(
                 """
