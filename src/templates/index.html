@@ -471,6 +471,10 @@
             margin: 0;
             border-collapse: collapse;
         }
+
+        .table-responsive {
+            overflow-x: auto;
+        }
         
         table thead tr {
             border-bottom: 2px solid var(--muted-border-color);
@@ -497,6 +501,130 @@
         
         table td {
             padding: 1rem;
+        }
+
+        /* Application inventory */
+        .application-toolbar {
+            display: flex;
+            align-items: end;
+            justify-content: space-between;
+            gap: 1rem;
+            flex-wrap: wrap;
+            margin-bottom: 1rem;
+        }
+
+        .application-toolbar h2 {
+            margin: 0;
+        }
+
+        .application-filters {
+            display: flex;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+        }
+
+        .application-filter {
+            margin: 0;
+            padding: 0.4rem 0.8rem;
+            min-height: auto;
+            font-size: 0.8rem;
+        }
+
+        .application-filter.active {
+            background: var(--brand-primary);
+            border-color: var(--brand-primary);
+            color: #000;
+        }
+
+        .application-name-button {
+            margin: 0;
+            padding: 0;
+            min-height: auto;
+            background: none;
+            border: 0;
+            box-shadow: none;
+            color: var(--color);
+            font-weight: 600;
+            text-align: left;
+        }
+
+        .application-name-button:hover,
+        .application-name-button:focus {
+            color: var(--brand-primary);
+            background: none;
+            border: 0;
+            box-shadow: none;
+        }
+
+        .application-name-button::before {
+            content: '›';
+            display: inline-block;
+            margin-right: 0.5rem;
+            transition: transform 0.15s ease;
+        }
+
+        .application-name-button[aria-expanded="true"]::before {
+            transform: rotate(90deg);
+        }
+
+        .application-owner {
+            display: block;
+            margin-top: 0.25rem;
+            color: var(--muted-color);
+            font-size: 0.75rem;
+            font-weight: 400;
+        }
+
+        .route-badges {
+            display: flex;
+            gap: 0.4rem;
+            flex-wrap: wrap;
+        }
+
+        .badge-published {
+            background: rgba(0, 212, 255, 0.15);
+            color: var(--brand-primary);
+        }
+
+        .badge-private {
+            background: rgba(139, 92, 246, 0.15);
+            color: #a78bfa;
+        }
+
+        .application-detail-row[hidden] {
+            display: none;
+        }
+
+        .application-detail-row td {
+            padding-top: 0;
+            background: rgba(0, 212, 255, 0.035);
+        }
+
+        .application-detail {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+            gap: 1rem;
+            padding: 1rem;
+            border-left: 3px solid var(--brand-primary);
+        }
+
+        .application-detail strong {
+            display: block;
+            margin-bottom: 0.25rem;
+            color: var(--muted-color);
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .application-detail span {
+            overflow-wrap: anywhere;
+        }
+
+        .application-empty {
+            text-align: center;
+            padding: 2rem 1rem;
+            color: var(--muted-color);
         }
         
         /* Details/Summary */
@@ -735,6 +863,11 @@
                 grid-template-columns: 1fr;
             }
 
+            .application-table th:nth-child(4),
+            .application-table td:nth-child(4) {
+                display: none;
+            }
+
             .tabs {
                 flex-wrap: wrap;
             }
@@ -788,7 +921,7 @@
             </div>
             
             <div class="nav-search">
-                <input type="search" id="search-input" placeholder="Search containers, tunnels..." />
+                <input type="search" id="search-input" placeholder="Search applications, hostnames, tunnels..." />
             </div>
             
             <div class="nav-actions">
@@ -809,8 +942,8 @@
             <div id="stats-overview"></div>
 
             <div class="tabs">
-                <button class="tab active" data-tab="container-status">📦 Container Status</button>
-                <button class="tab" data-tab="tunnels">🔌 Tunnels</button>
+                <button class="tab active" data-tab="container-status">📦 Applications</button>
+                <button class="tab" data-tab="tunnels">🔌 Tunnels & Routes</button>
                 <button class="tab" data-tab="access">🔐 Access & Security</button>
             </div>
             
@@ -856,6 +989,7 @@
             const AUTO_REFRESH_INTERVAL = 30000;
             let refreshInterval = null;
             let progressInterval = null;
+            let applicationFilter = 'all';
 
             // Tab switching
             document.querySelectorAll('.tab').forEach(tab => {
@@ -873,13 +1007,62 @@
                 });
             });
 
-            // Search functionality
-            searchInput.addEventListener('input', (e) => {
-                const searchTerm = e.target.value.toLowerCase();
-                document.querySelectorAll('table tbody tr').forEach(row => {
-                    const text = row.textContent.toLowerCase();
-                    row.style.display = text.includes(searchTerm) ? '' : 'none';
+            function filterDashboardRows() {
+                const searchTerm = searchInput.value.toLowerCase().trim();
+
+                document.querySelectorAll('.application-row').forEach(row => {
+                    const matchesSearch = row.dataset.search.includes(searchTerm);
+                    const routeTypes = (row.dataset.routeTypes || '').split(',');
+                    const matchesFilter =
+                        applicationFilter === 'all' ||
+                        (applicationFilter === 'issues' && row.dataset.hasIssue === 'true') ||
+                        routeTypes.includes(applicationFilter);
+                    const visible = matchesSearch && matchesFilter;
+                    row.hidden = !visible;
+
+                    const detailRow = document.querySelector(
+                        `.application-detail-row[data-detail-for="${row.dataset.applicationId}"]`
+                    );
+                    if (detailRow && !visible) {
+                        detailRow.hidden = true;
+                        const button = row.querySelector('.application-name-button');
+                        if (button) button.setAttribute('aria-expanded', 'false');
+                    }
                 });
+
+                document.querySelectorAll(
+                    '#tab-tunnels table tbody tr, #tab-access table tbody tr'
+                ).forEach(row => {
+                    row.style.display = row.textContent.toLowerCase().includes(searchTerm) ? '' : 'none';
+                });
+            }
+
+            searchInput.addEventListener('input', filterDashboardRows);
+
+            tabContainerStatus.addEventListener('click', event => {
+                const filterButton = event.target.closest('.application-filter');
+                if (filterButton) {
+                    applicationFilter = filterButton.dataset.filter;
+                    tabContainerStatus.querySelectorAll('.application-filter').forEach(button => {
+                        const active = button === filterButton;
+                        button.classList.toggle('active', active);
+                        button.setAttribute('aria-pressed', active ? 'true' : 'false');
+                    });
+                    filterDashboardRows();
+                    return;
+                }
+
+                const applicationButton = event.target.closest('.application-name-button');
+                if (!applicationButton) return;
+
+                const detailRow = tabContainerStatus.querySelector(
+                    `.application-detail-row[data-detail-for="${applicationButton.dataset.applicationId}"]`
+                );
+                if (!detailRow) return;
+
+                const expanded = applicationButton.getAttribute('aria-expanded') === 'true';
+                applicationButton.setAttribute('aria-expanded', expanded ? 'false' : 'true');
+                detailRow.hidden = expanded;
             });
 
             // Sanitizer function to prevent XSS
@@ -887,6 +1070,15 @@
                 const element = document.createElement('div');
                 element.innerText = text;
                 return element.innerHTML;
+            }
+
+            function sanitizeAttribute(text) {
+                return String(text)
+                    .replace(/&/g, '&amp;')
+                    .replace(/"/g, '&quot;')
+                    .replace(/'/g, '&#39;')
+                    .replace(/</g, '&lt;')
+                    .replace(/>/g, '&gt;');
             }
             
             // Safe URL display - ensures URLs are properly sanitized for display
@@ -1016,21 +1208,48 @@
                         
                         // Calculate stats
                         const containerIds = Object.keys(containers);
-                        const activeCount = containerIds.filter(id => containers[id].status === 'active').length;
-                        const misconfiguredCount = containerIds.filter(id => containers[id].status === 'misconfigured').length;
-                        const disabledCount = containerIds.filter(id => containers[id].status === 'disabled').length;
-                        const tunnelCount = Object.keys(data.tunnels || {}).length;
-                        const appCount = Object.values(data.access_applications || {}).length;
+                        const applications = containerIds.map(id => ({
+                            id,
+                            ...containers[id]
+                        })).sort((left, right) => (left.name || '').localeCompare(right.name || ''));
+                        const publishedCount = applications.filter(application =>
+                            application.tunnel && application.hostname && application.service
+                        ).length;
+                        const privateCount = applications.reduce(
+                            (total, application) => total + Number(application.warp_route_count || 0),
+                            0
+                        );
+                        const issueCount = applications.filter(application =>
+                            ['misconfigured', 'error'].includes(application.status)
+                        ).length;
                         
                         // Render stats overview with new design
                         statsOverview.innerHTML = `
                             <div class="stats-grid">
                                 <div class="stat-card">
                                     <div class="stat-card-header">
-                                        <div class="stat-icon active">✅</div>
+                                        <div class="stat-icon active">📦</div>
                                         <div class="stat-content">
-                                            <h3>Active Containers</h3>
-                                            <p class="stat-value">${activeCount}</p>
+                                            <h3>Applications</h3>
+                                            <p class="stat-value">${applications.length}</p>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="stat-card">
+                                    <div class="stat-card-header">
+                                        <div class="stat-icon info">🌐</div>
+                                        <div class="stat-content">
+                                            <h3>Published Routes</h3>
+                                            <p class="stat-value">${publishedCount}</p>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="stat-card">
+                                    <div class="stat-card-header">
+                                        <div class="stat-icon primary">🛡️</div>
+                                        <div class="stat-content">
+                                            <h3>Private Routes</h3>
+                                            <p class="stat-value">${privateCount}</p>
                                         </div>
                                     </div>
                                 </div>
@@ -1038,26 +1257,8 @@
                                     <div class="stat-card-header">
                                         <div class="stat-icon warning">⚠️</div>
                                         <div class="stat-content">
-                                            <h3>Misconfigured</h3>
-                                            <p class="stat-value">${misconfiguredCount}</p>
-                                        </div>
-                                    </div>
-                                </div>
-                                <div class="stat-card">
-                                    <div class="stat-card-header">
-                                        <div class="stat-icon info">🔌</div>
-                                        <div class="stat-content">
-                                            <h3>Cloudflare Tunnels</h3>
-                                            <p class="stat-value">${tunnelCount}</p>
-                                        </div>
-                                    </div>
-                                </div>
-                                <div class="stat-card">
-                                    <div class="stat-card-header">
-                                        <div class="stat-icon primary">🔐</div>
-                                        <div class="stat-content">
-                                            <h3>Access Policies</h3>
-                                            <p class="stat-value">${appCount}</p>
+                                            <h3>Needs Attention</h3>
+                                            <p class="stat-value">${issueCount}</p>
                                         </div>
                                     </div>
                                 </div>
@@ -1069,89 +1270,122 @@
                         tabTunnels.innerHTML = '';
                         tabAccess.innerHTML = '';
 
-                        // Container Status Section
-                        if (containerIds.length > 0) {
-                            const activeContainers = [];
-                            const httpRoutedContainers = [];
-                            const warpRoutedContainers = [];
-                            const disabledContainers = [];
-                            const misconfiguredContainers = [];
-                            
-                            containerIds.forEach(id => {
-                                const container = containers[id];
-                                if (container.status === 'active') {
-                                    activeContainers.push(container);
-                                    if (container.tunnel && container.hostname && container.service) {
-                                        httpRoutedContainers.push(container);
-                                    }
-                                    if (container.warp_enabled || container.warp_active || (container.warp_route_count || 0) > 0) {
-                                        warpRoutedContainers.push(container);
-                                    }
-                                } else if (container.status === 'disabled') {
-                                    disabledContainers.push(container);
-                                } else if (container.status === 'misconfigured') {
-                                    misconfiguredContainers.push(container);
+                        // One row per Docker owner, with its reachability modes shown together.
+                        if (applications.length > 0) {
+                            const publishedApplications = applications.filter(application =>
+                                application.tunnel && application.hostname && application.service
+                            ).length;
+                            const privateApplications = applications.filter(application =>
+                                application.warp_enabled || application.warp_active ||
+                                Number(application.warp_route_count || 0) > 0
+                            ).length;
+
+                            let applicationHtml = `
+                                <div class="section-card">
+                                    <div class="application-toolbar">
+                                        <h2>📦 Applications</h2>
+                                        <div class="application-filters" aria-label="Filter applications">
+                                            <button class="secondary application-filter ${applicationFilter === 'all' ? 'active' : ''}" data-filter="all" aria-pressed="${applicationFilter === 'all'}">All ${applications.length}</button>
+                                            <button class="secondary application-filter ${applicationFilter === 'published' ? 'active' : ''}" data-filter="published" aria-pressed="${applicationFilter === 'published'}">Published ${publishedApplications}</button>
+                                            <button class="secondary application-filter ${applicationFilter === 'private' ? 'active' : ''}" data-filter="private" aria-pressed="${applicationFilter === 'private'}">Private ${privateApplications}</button>
+                                            <button class="secondary application-filter ${applicationFilter === 'issues' ? 'active' : ''}" data-filter="issues" aria-pressed="${applicationFilter === 'issues'}">Issues ${issueCount}</button>
+                                        </div>
+                                    </div>
+                                    <div class="table-responsive">
+                                        <table class="application-table">
+                                            <thead><tr><th>Application</th><th>Reachability</th><th>Hostname</th><th>Tunnel</th><th>State</th></tr></thead>
+                                            <tbody>
+                            `;
+
+                            applications.forEach((application, index) => {
+                                const isPublished = Boolean(
+                                    application.tunnel && application.hostname && application.service
+                                );
+                                const isPrivate = Boolean(
+                                    application.warp_enabled || application.warp_active ||
+                                    Number(application.warp_route_count || 0) > 0
+                                );
+                                const hasIssue = ['misconfigured', 'error'].includes(application.status);
+                                const routeTypes = [
+                                    isPublished ? 'published' : '',
+                                    isPrivate ? 'private' : ''
+                                ].filter(Boolean);
+                                const hostnames = Array.from(new Set([
+                                    isPublished ? application.hostname : '',
+                                    ...(application.warp_hostnames || [])
+                                ].filter(Boolean)));
+                                const reachability = [];
+
+                                if (isPublished) {
+                                    reachability.push('<span class="badge badge-published">Published</span>');
                                 }
+                                if (isPrivate) {
+                                    reachability.push('<span class="badge badge-private">WARP private</span>');
+                                }
+                                if (reachability.length === 0) {
+                                    reachability.push('<span class="badge badge-disabled">Not routed</span>');
+                                }
+
+                                let statusClass = 'badge-disabled';
+                                if (application.status === 'active') statusClass = 'badge-active';
+                                if (application.status === 'misconfigured') statusClass = 'badge-warning';
+                                if (application.status === 'error') statusClass = 'badge-error';
+
+                                const ownerLabel = application.owner_kind === 'swarm_service'
+                                    ? `Swarm service${application.replicas_desired != null ? ` · ${application.replicas_desired} desired` : ''}`
+                                    : 'Docker container';
+                                const detailId = `application-${index}`;
+                                const searchableText = [
+                                    application.name,
+                                    ownerLabel,
+                                    hostnames.join(' '),
+                                    application.tunnel,
+                                    application.service,
+                                    application.status,
+                                    application.reason,
+                                    routeTypes.join(' ')
+                                ].filter(Boolean).join(' ').toLowerCase();
+
+                                applicationHtml += `
+                                    <tr class="application-row"
+                                        data-application-id="${detailId}"
+                                        data-route-types="${routeTypes.join(',')}"
+                                        data-has-issue="${hasIssue}"
+                                        data-search="${sanitizeAttribute(searchableText)}">
+                                        <td>
+                                            <button class="application-name-button" data-application-id="${detailId}" aria-expanded="false">
+                                                ${application.name || 'Unnamed application'}
+                                            </button>
+                                            <span class="application-owner">${ownerLabel}</span>
+                                        </td>
+                                        <td><div class="route-badges">${reachability.join('')}</div></td>
+                                        <td>${hostnames.join('<br>') || '—'}</td>
+                                        <td>${application.tunnel || '—'}</td>
+                                        <td><span class="badge ${statusClass}">${application.status || 'unknown'}</span></td>
+                                    </tr>
+                                    <tr class="application-detail-row" data-detail-for="${detailId}" hidden>
+                                        <td colspan="5">
+                                            <div class="application-detail">
+                                                <div><strong>Published target</strong><span>${isPublished ? application.service : 'Not configured'}</span></div>
+                                                <div><strong>Access</strong><span>${isPublished ? (application.has_access_policy ? 'Protected by Access' : 'No Access policy') : 'Not applicable'}</span></div>
+                                                <div><strong>Private hostname routes</strong><span>${Number(application.warp_route_count || 0)} active</span></div>
+                                                <div><strong>Details</strong><span>${application.reason || 'Configuration reconciled successfully'}</span></div>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                `;
                             });
-                            
-                            let containerHtml = '<div class="section-card"><h2>📦 Container Status</h2>';
-                            
-                            // Active containers
-                            if (activeContainers.length > 0) {
-                                containerHtml += '<h3><span class="badge badge-active">Active (' + activeContainers.length + ')</span></h3>';
-                                const activeRows = activeContainers.map(c => [
-                                    c.name,
-                                    c.tunnel,
-                                    c.hostname,
-                                    c.service,
-                                    c.has_access_policy ? '<span class="badge badge-active">Yes</span>' : '<span class="badge badge-disabled">No</span>'
-                                ]);
-                                containerHtml += createTable(['Container', 'Tunnel', 'Hostname', 'Service', 'Access Policy'], activeRows);
-                            }
 
-                            if (httpRoutedContainers.length > 0) {
-                                containerHtml += '<h3><span class="badge badge-info">HTTP Routed (' + httpRoutedContainers.length + ')</span></h3>';
-                                const httpRows = httpRoutedContainers.map(c => [
-                                    c.name,
-                                    c.tunnel,
-                                    c.hostname,
-                                    c.service,
-                                    c.has_access_policy ? '<span class="badge badge-active">Yes</span>' : '<span class="badge badge-disabled">No</span>'
-                                ]);
-                                containerHtml += createTable(['Container', 'Tunnel', 'Hostname', 'Service', 'Access Policy'], httpRows);
-                            }
-
-                            if (warpRoutedContainers.length > 0) {
-                                containerHtml += '<h3><span class="badge badge-primary">Warp Routed (' + warpRoutedContainers.length + ')</span></h3>';
-                                const warpRows = warpRoutedContainers.map(c => [
-                                    c.name,
-                                    (c.warp_hostnames || []).join(', ') || '<i>None</i>',
-                                    c.warp_route_count || 0,
-                                    c.warp_active ? '<span class="badge badge-active">Active</span>' : '<span class="badge badge-disabled">Disabled</span>'
-                                ]);
-                                containerHtml += createTable(['Container', 'Hostnames', 'Private Routes', 'State'], warpRows);
-                            }
-                            
-                            // Misconfigured containers
-                            if (misconfiguredContainers.length > 0) {
-                                containerHtml += '<h3><span class="badge badge-warning">Misconfigured (' + misconfiguredContainers.length + ')</span></h3>';
-                                const misconfiguredRows = misconfiguredContainers.map(c => [
-                                    c.name,
-                                    '<mark>' + c.reason + '</mark>'
-                                ]);
-                                containerHtml += createTable(['Container', 'Issue'], misconfiguredRows);
-                            }
-                            
-                            // Disabled containers (collapsed)
-                            if (disabledContainers.length > 0) {
-                                containerHtml += '<details><summary><span class="badge badge-disabled">Disabled (' + disabledContainers.length + ')</span></summary>';
-                                const disabledRows = disabledContainers.map(c => [c.name, c.reason]);
-                                containerHtml += createTable(['Container', 'Reason'], disabledRows);
-                                containerHtml += '</details>';
-                            }
-                            
-                            containerHtml += '</div>';
-                            tabContainerStatus.innerHTML += containerHtml;
+                            applicationHtml += `
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            `;
+                            tabContainerStatus.innerHTML = applicationHtml;
+                            filterDashboardRows();
+                        } else {
+                            tabContainerStatus.innerHTML = '<div class="section-card"><div class="application-empty">No Docker Dash applications discovered.</div></div>';
                         }
 
                         // Tunnels Section
